@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Read-only token, no secrets: PRs from forks run here.
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # GitHub-hosted on purpose: this repo is public, so a fork PR must never run on the owner's self-hosted Mac.
+    # Standard hosted runners are free in public repos (docs.github.com, checked 2026-11-18).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -count=1 ./...
