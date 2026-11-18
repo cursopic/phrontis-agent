@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "phrontis-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one sampler at a time, never two during a rollout
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phrontis-agent
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels: {{- include "phrontis-agent.labels" . | nindent 8 }}
+    spec:
+      # No checksum annotation for the key: a rotated key gets a 401, the agent exits, and the restart reads the new Secret.
+      serviceAccountName: {{ .Release.Name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --api={{ required "set api.url" .Values.api.url }}
+            - --every={{ .Values.every }}
+          env:
+            - name: PHRONTIS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "phrontis-agent.secret" . }}
+                  key: {{ .Values.api.existingSecretKey }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

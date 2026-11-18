@@ -1,0 +1,51 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: weekday
+spec:
+  disruption:
+    budgets:
+      - nodes: 20%
+      - duration: 20h0m
+        nodes: "0"
+        schedule: 0 5 * * 1,2,3,4
+      - duration: 68h0m
+        nodes: "0"
+        schedule: 0 5 * * 5
+    consolidateAfter: 1m
+    consolidationPolicy: WhenEmptyOrUnderutilized
+  template:
+    spec:
+      expireAfter: 336h
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: weekday
+      requirements:
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            - m6i
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - on-demand
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: weekday
+spec:
+  amiSelectorTerms:
+    - alias: al2023@v20240625
+  role: KarpenterNodeRole-demo
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: demo
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: demo
