@@ -1,0 +1,6 @@
+apiVersion: v2
+name: phrontis-agent
+description: Read-only Phrontis agent. Samples nodes, pods and pod metrics and sends them to the Phrontis API.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

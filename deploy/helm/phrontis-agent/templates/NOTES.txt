@@ -1,0 +1,4 @@
+Phrontis agent {{ .Chart.AppVersion }} is installed. It sends read-only cluster samples to {{ .Values.api.url }}.
+
+Upgrade order: upgrade the Phrontis API before this agent. An older API rejects samples
+that carry fields it does not know yet (for example HPAs), and those samples are lost.

@@ -1,0 +1,457 @@
+{
+  "Nodes": 6,
+  "Capacity": {
+    "MilliCPU": 12000,
+    "MemBytes": 51539607552
+  },
+  "Monthly": 503.69999999999993,
+  "IdleMonthly": 145.26429687499999,
+  "Namespaces": [
+    {
+      "Namespace": "checkout",
+      "Workload": "",
+      "Pods": 5,
+      "Monthly": 135.04999999999998
+    },
+    {
+      "Namespace": "payments",
+      "Workload": "",
+      "Pods": 3,
+      "Monthly": 81.548984375
+    },
+    {
+      "Namespace": "data",
+      "Workload": "",
+      "Pods": 2,
+      "Monthly": 71.175
+    },
+    {
+      "Namespace": "monitoring",
+      "Workload": "",
+      "Pods": 2,
+      "Monthly": 43.8
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "",
+      "Pods": 9,
+      "Monthly": 26.861718749999998
+    }
+  ],
+  "Workloads": [
+    {
+      "Namespace": "checkout",
+      "Workload": "Deployment/api",
+      "Pods": 3,
+      "Monthly": 104.02499999999999
+    },
+    {
+      "Namespace": "payments",
+      "Workload": "StatefulSet/ledger-db",
+      "Pods": 1,
+      "Monthly": 62.9625
+    },
+    {
+      "Namespace": "data",
+      "Workload": "Deployment/kafka-connect",
+      "Pods": 1,
+      "Monthly": 36.5
+    },
+    {
+      "Namespace": "monitoring",
+      "Workload": "StatefulSet/prometheus",
+      "Pods": 1,
+      "Monthly": 36.5
+    },
+    {
+      "Namespace": "data",
+      "Workload": "CronJob/nightly-etl",
+      "Pods": 1,
+      "Monthly": 34.675
+    },
+    {
+      "Namespace": "checkout",
+      "Workload": "Deployment/web",
+      "Pods": 2,
+      "Monthly": 31.025
+    },
+    {
+      "Namespace": "payments",
+      "Workload": "Deployment/worker",
+      "Pods": 2,
+      "Monthly": 18.586484374999998
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "DaemonSet/kube-proxy",
+      "Pods": 6,
+      "Monthly": 17.79375
+    },
+    {
+      "Namespace": "monitoring",
+      "Workload": "Deployment/grafana",
+      "Pods": 1,
+      "Monthly": 7.3
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "Deployment/coredns",
+      "Pods": 2,
+      "Monthly": 5.9740234375000005
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "Pod/etcd-node-a",
+      "Pods": 1,
+      "Monthly": 3.0939453125
+    }
+  ],
+  "Recs": [
+    {
+      "Namespace": "checkout",
+      "Workload": "Deployment/api",
+      "Container": "api",
+      "Pods": 3,
+      "Request": {
+        "MilliCPU": 1000,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 216,
+        "MemBytes": 817889280
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 77.94517968749999,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "data",
+      "Workload": "Deployment/kafka-connect",
+      "Container": "connect",
+      "Pods": 1,
+      "Request": {
+        "MilliCPU": 800,
+        "MemBytes": 4294967296
+      },
+      "Recommended": {
+        "MilliCPU": 180,
+        "MemBytes": 1635778560
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 26.011953125,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "checkout",
+      "Workload": "Deployment/web",
+      "Container": "nginx",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 536870912
+      },
+      "Recommended": {
+        "MilliCPU": 72,
+        "MemBytes": 163577856
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 25.970890625,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "DaemonSet/kube-proxy",
+      "Container": "kube-proxy",
+      "Pods": 6,
+      "Request": {
+        "MilliCPU": 100,
+        "MemBytes": 67108864
+      },
+      "Recommended": {
+        "MilliCPU": 10,
+        "MemBytes": 40894464
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 15.317167968749999,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "monitoring",
+      "Workload": "StatefulSet/prometheus",
+      "Container": "prometheus",
+      "Pods": 1,
+      "Request": {
+        "MilliCPU": 800,
+        "MemBytes": 4294967296
+      },
+      "Recommended": {
+        "MilliCPU": 480,
+        "MemBytes": 3953131520
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 9.922011718749998,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "monitoring",
+      "Workload": "Deployment/grafana",
+      "Container": "grafana",
+      "Pods": 1,
+      "Request": {
+        "MilliCPU": 200,
+        "MemBytes": 536870912
+      },
+      "Recommended": {
+        "MilliCPU": 24,
+        "MemBytes": 204472320
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 5.947931640625,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "kube-system",
+      "Workload": "Deployment/coredns",
+      "Container": "coredns",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 100,
+        "MemBytes": 73400320
+      },
+      "Recommended": {
+        "MilliCPU": 10,
+        "MemBytes": 34603008
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": 5.191269531250001,
+      "OOMKilled": false,
+      "Throttled": false
+    },
+    {
+      "Namespace": "payments",
+      "Workload": "Deployment/worker",
+      "Container": "worker",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 250,
+        "MemBytes": 268435456
+      },
+      "Recommended": {
+        "MilliCPU": 348,
+        "MemBytes": 524288000
+      },
+      "Limit": {
+        "MilliCPU": 300,
+        "MemBytes": 402653184
+      },
+      "MonthlySaving": -4.030968750000001,
+      "OOMKilled": true,
+      "Throttled": true
+    },
+    {
+      "Namespace": "data",
+      "Workload": "CronJob/nightly-etl",
+      "Container": "etl",
+      "Pods": 1,
+      "Request": {
+        "MilliCPU": 700,
+        "MemBytes": 3221225472
+      },
+      "Recommended": {
+        "MilliCPU": 1560,
+        "MemBytes": 4886364160
+      },
+      "Limit": {
+        "MilliCPU": 0,
+        "MemBytes": 0
+      },
+      "MonthlySaving": -10.95285156249999,
+      "OOMKilled": false,
+      "Throttled": false
+    }
+  ],
+  "Context": "sample",
+  "Prices": {
+    "CPUHour": 0.03,
+    "GiBHour": 0.004
+  },
+  "NodePrices": [
+    {
+      "Node": "node-a",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    },
+    {
+      "Node": "node-b",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    },
+    {
+      "Node": "node-c",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    },
+    {
+      "Node": "node-d",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    },
+    {
+      "Node": "node-e",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    },
+    {
+      "Node": "node-f",
+      "Source": "aws on-demand",
+      "Hourly": 0.115
+    }
+  ],
+  "Samples": 1,
+  "Window": "0s",
+  "Basis": "peak",
+  "At": "2026-11-14T12:00:00Z",
+  "Storage": {
+    "Namespaces": [
+      {
+        "Namespace": "data",
+        "Volumes": 2,
+        "GiB": 600,
+        "Monthly": 57.120000000000005,
+        "Unpriced": 0
+      },
+      {
+        "Namespace": "payments",
+        "Volumes": 1,
+        "GiB": 200,
+        "Monthly": 19.040000000000003,
+        "Unpriced": 0
+      },
+      {
+        "Namespace": "monitoring",
+        "Volumes": 1,
+        "GiB": 100,
+        "Monthly": 9.520000000000001,
+        "Unpriced": 0
+      },
+      {
+        "Namespace": "checkout",
+        "Volumes": 1,
+        "GiB": 50,
+        "Monthly": 4.760000000000001,
+        "Unpriced": 0
+      }
+    ],
+    "Unclaimed": {
+      "Namespace": "",
+      "Volumes": 2,
+      "GiB": 300,
+      "Monthly": 28.560000000000002,
+      "Unpriced": 0
+    },
+    "Total": {
+      "Namespace": "",
+      "Volumes": 7,
+      "GiB": 1250,
+      "Monthly": 119.00000000000001,
+      "Unpriced": 0
+    }
+  },
+  "LoadBalancers": {
+    "Namespaces": [
+      {
+        "Namespace": "checkout",
+        "Count": 2,
+        "Monthly": 41.61,
+        "Unpriced": 0
+      },
+      {
+        "Namespace": "monitoring",
+        "Count": 1,
+        "Monthly": 0,
+        "Unpriced": 1
+      }
+    ],
+    "Total": {
+      "Namespace": "",
+      "Count": 3,
+      "Monthly": 41.61,
+      "Unpriced": 1
+    }
+  },
+  "NodePool": {
+    "Families": [
+      "m5"
+    ],
+    "Type": "m5.large",
+    "Nodes": 4,
+    "Monthly": 335.8,
+    "Current": 503.69999999999993,
+    "SpotShare": 0.25,
+    "OnDemand": [
+      "data/CronJob/nightly-etl",
+      "data/Deployment/kafka-connect",
+      "monitoring/Deployment/grafana",
+      "monitoring/StatefulSet/prometheus",
+      "payments/StatefulSet/ledger-db"
+    ],
+    "Unplaced": 0,
+    "YAML": "# Set nodeClassRef.name to your EC2NodeClass before you apply.\napiVersion: karpenter.sh/v1\nkind: NodePool\nmetadata:\n  name: phrontis\nspec:\n  disruption:\n    budgets:\n      - nodes: 10%\n    consolidateAfter: 1m\n    consolidationPolicy: WhenEmptyOrUnderutilized\n  template:\n    spec:\n      expireAfter: 720h\n      nodeClassRef:\n        group: karpenter.k8s.aws\n        kind: EC2NodeClass\n        name: default\n      requirements:\n        - key: karpenter.k8s.aws/instance-family\n          operator: In\n          values:\n            - m5\n        - key: kubernetes.io/arch\n          operator: In\n          values:\n            - amd64\n        - key: karpenter.sh/capacity-type\n          operator: In\n          values:\n            - on-demand\n  weight: 1\n---\napiVersion: karpenter.sh/v1\nkind: NodePool\nmetadata:\n  name: phrontis-spot\nspec:\n  disruption:\n    budgets:\n      - nodes: 10%\n    consolidateAfter: 1m\n    consolidationPolicy: WhenEmptyOrUnderutilized\n  template:\n    spec:\n      expireAfter: 720h\n      nodeClassRef:\n        group: karpenter.k8s.aws\n        kind: EC2NodeClass\n        name: default\n      requirements:\n        - key: karpenter.k8s.aws/instance-family\n          operator: In\n          values:\n            - m5\n        - key: kubernetes.io/arch\n          operator: In\n          values:\n            - amd64\n        - key: karpenter.sh/capacity-type\n          operator: In\n          values:\n            - spot\n      taints:\n        - effect: NoSchedule\n          key: karpenter.sh/capacity-type\n          value: spot\n"
+  },
+  "Spot": {
+    "Priced": true,
+    "Note": "made-up demo spot price, not an AWS quote",
+    "Saving": 91.97218919836958,
+    "Kept": 7,
+    "Workloads": [
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/api",
+        "Pods": 3,
+        "Monthly": 104.02499999999999,
+        "Saving": 67.84239130434783
+      },
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/web",
+        "Pods": 2,
+        "Monthly": 31.025,
+        "Saving": 20.233695652173914
+      },
+      {
+        "Namespace": "kube-system",
+        "Workload": "Deployment/coredns",
+        "Pods": 2,
+        "Monthly": 5.9740234375000005,
+        "Saving": 3.8961022418478266
+      }
+    ]
+  }
+}
