@@ -13,7 +13,32 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Docs-only PRs skip the gate: a skipped required check counts as passed (owner 2026-11-23). Any error means "run the gate".
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null) || files=""
+          if [ -n "$PR" ] && [ -n "$files" ] && ! echo "$files" | grep -qvE '^docs/|^[^/]+\.md$|^\.claude/|^workflows/'; then
+            echo code=false >> "$GITHUB_OUTPUT"
+          else
+            echo code=true >> "$GITHUB_OUTPUT"
+          fi
+
   gate:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # GitHub-hosted on purpose: this repo is public, so a fork PR must never run on the owner's self-hosted Mac.
     # Standard hosted runners are free in public repos (docs.github.com, checked 2026-11-18).
     runs-on: ubuntu-latest
