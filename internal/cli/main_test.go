@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"slices"
@@ -144,27 +145,27 @@ func TestCollect(t *testing.T) {
 		}
 	}
 	want := map[string]report.Container{
-		"Deployment/web": {Name: "app", Request: report.Resources{MilliCPU: 250}, Limit: report.Resources{MemBytes: 1 << 30},
+		"Deployment/web": {Name: "app", AllowPrivEsc: true, Request: report.Resources{MilliCPU: 250}, Limit: report.Resources{MemBytes: 1 << 30},
 			Usage: report.Resources{MilliCPU: 40, MemBytes: 100 << 20}, HasUsage: true, ManifestMemLimit: 512 << 20},
-		"CronJob/nightly": {Name: "app", Request: report.Resources{MilliCPU: 1000}},
-		"StatefulSet/db":  {Name: "app", Request: report.Resources{MilliCPU: 500}, Limit: report.Resources{MilliCPU: 1000, MemBytes: 512 << 20}, OOMKilled: true},
-		"Pod/etcd-n1":     {Name: "app", Request: report.Resources{MilliCPU: 100}},
+		"CronJob/nightly": {Name: "app", AllowPrivEsc: true, Request: report.Resources{MilliCPU: 1000}},
+		"StatefulSet/db":  {Name: "app", AllowPrivEsc: true, Request: report.Resources{MilliCPU: 500}, Limit: report.Resources{MilliCPU: 1000, MemBytes: 512 << 20}, OOMKilled: true},
+		"Pod/etcd-n1":     {Name: "app", AllowPrivEsc: true, Request: report.Resources{MilliCPU: 100}},
 	}
 	if len(pods) != 4 || len(got) != len(want) {
 		t.Fatalf("pods = %+v", pods)
 	}
 	for wl, c := range want {
-		if got[wl] != c {
+		if !reflect.DeepEqual(got[wl], c) {
 			t.Errorf("%s: got %+v, want %+v", wl, got[wl], c)
 		}
 	}
 
 	wantVols := map[string]report.Volume{
-		"pv-io2":      {Name: "pv-io2", Namespace: "shop", Claim: "data", Bytes: 10 << 30, Type: "io2"},
-		"pv-default":  {Name: "pv-default", Namespace: "shop", Claim: "logs", Bytes: 20 << 30, Type: "gp3"},
-		"pv-released": {Name: "pv-released", Bytes: 5 << 30, Type: "gp3"},
-		"pv-host":     {Name: "pv-host", Namespace: "dev", Claim: "scratch", Bytes: 1 << 30},
-		"pv-noclass":  {Name: "pv-noclass", Bytes: 2 << 30},
+		"pv-io2":      {Name: "pv-io2", Namespace: "shop", Claim: "data", Bytes: 10 << 30, Type: "io2", Class: "fast"},
+		"pv-default":  {Name: "pv-default", Namespace: "shop", Claim: "logs", Bytes: 20 << 30, Type: "gp3", Class: "plain"},
+		"pv-released": {Name: "pv-released", Bytes: 5 << 30, Type: "gp3", Class: "plain"},
+		"pv-host":     {Name: "pv-host", Namespace: "dev", Claim: "scratch", Bytes: 1 << 30, Class: "standard"},
+		"pv-noclass":  {Name: "pv-noclass", Bytes: 2 << 30, Class: "gone"},
 	}
 	if len(vols) != len(wantVols) {
 		t.Fatalf("vols = %+v", vols)
@@ -227,7 +228,7 @@ func TestCollect(t *testing.T) {
 	}
 
 	var js strings.Builder
-	if err := writeJSON(&js, export{r, "test", prices, nil, samples, "0s", basis(false), time.Unix(0, 0).UTC(), st, lb, nil, nil, nil}); err != nil {
+	if err := writeJSON(&js, export{r, "test", prices, nil, samples, "0s", basis(false), time.Unix(0, 0).UTC(), st, lb, nil, nil, nil, report.SecurityReport{}, nil, nil, nil, nil, nil}); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any
@@ -255,6 +256,8 @@ func (f *fakePricer) EC2Types(_ context.Context, _ string) (map[string]pricing.T
 		"m5.metal": {VCPU: 96, MemGiB: 384, Hourly: 4}, "m7i.metal-24xl": {VCPU: 96, MemGiB: 384, Hourly: 5}, "p3.2xlarge": {VCPU: 8, MemGiB: 61, Hourly: 3},
 	}, nil
 }
+
+func (f *fakePricer) DataTransferOut(context.Context, string) (float64, error) { return 0.09, nil }
 
 func (f *fakePricer) ELBHourly(_ context.Context, _ string) (map[string]float64, error) {
 	return map[string]float64{"classic": 0.03, "nlb": 0.027}, nil
@@ -302,6 +305,19 @@ func TestPriceNodesFallsBackOnError(t *testing.T) {
 		if !strings.Contains(out.String(), s) {
 			t.Errorf("render lacks %q:\n%s", s, out.String())
 		}
+	}
+}
+
+func TestRenderNoRecsHasNoWhy(t *testing.T) {
+	var out strings.Builder
+	render(&out, report.Report{}, report.Prices{}, nil, 1, 0, false)
+	if strings.Contains(out.String(), "WHY") || !strings.Contains(out.String(), "no rightsizing changes") {
+		t.Errorf("empty recs:\n%s", out.String())
+	}
+	out.Reset()
+	render(&out, report.Report{Recs: []report.Rec{{Workload: "d/a", Container: "c", Explanation: "because"}}}, report.Prices{}, nil, 1, 0, false)
+	if !strings.Contains(out.String(), "\nWHY\n") || !strings.Contains(out.String(), "because") {
+		t.Errorf("with recs:\n%s", out.String())
 	}
 }
 
@@ -456,9 +472,39 @@ func TestListHPAs(t *testing.T) {
 				{Type: autoscalingv2.PodsMetricSourceType}}}}
 	var warn strings.Builder
 	got := listHPAs(context.Background(), fake.NewClientset(h), &warn)
-	want := []report.HPA{{Namespace: "shop", Name: "web", Target: "Deployment/web", Resources: []string{"cpu"}}}
+	want := []report.HPA{{Namespace: "shop", Name: "web", Target: "Deployment/web", Resources: []string{"cpu"}, MinReplicas: 1}}
 	if !reflect.DeepEqual(got, want) || warn.Len() > 0 {
 		t.Fatalf("got %+v warn %q", got, warn.String())
+	}
+	// Spec 020: Resource and ContainerResource utilization targets, min and current replicas; averageValue is no target.
+	util := func(n corev1.ResourceName, u int32) autoscalingv2.MetricTarget {
+		return autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: &u}
+	}
+	min := int32(2)
+	h2 := &autoscalingv2.HorizontalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "api"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{Kind: "Deployment", Name: "api"}, MinReplicas: &min, MaxReplicas: 6,
+			Metrics: []autoscalingv2.MetricSpec{
+				{Type: autoscalingv2.ContainerResourceMetricSourceType, ContainerResource: &autoscalingv2.ContainerResourceMetricSource{Name: corev1.ResourceCPU, Container: "app", Target: util(corev1.ResourceCPU, 50)}},
+				{Type: autoscalingv2.ResourceMetricSourceType, Resource: &autoscalingv2.ResourceMetricSource{Name: corev1.ResourceMemory, Target: autoscalingv2.MetricTarget{Type: autoscalingv2.AverageValueMetricType}}}}},
+		Status: autoscalingv2.HorizontalPodAutoscalerStatus{CurrentReplicas: 6}}
+	got = listHPAs(context.Background(), fake.NewClientset(h2), &warn)
+	want = []report.HPA{{Namespace: "shop", Name: "api", Target: "Deployment/api", Resources: []string{"cpu", "memory"}, CPUTarget: 50, CPUContainer: "app", MinReplicas: 2, Replicas: 6, MaxReplicas: 6}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("targets: got %+v", got)
+	}
+	// Both a Resource and a ContainerResource CPU target: the container one wins, whatever the order.
+	for _, order := range []bool{false, true} {
+		ms := []autoscalingv2.MetricSpec{
+			{Type: autoscalingv2.ContainerResourceMetricSourceType, ContainerResource: &autoscalingv2.ContainerResourceMetricSource{Name: corev1.ResourceCPU, Container: "app", Target: util(corev1.ResourceCPU, 40)}},
+			{Type: autoscalingv2.ResourceMetricSourceType, Resource: &autoscalingv2.ResourceMetricSource{Name: corev1.ResourceCPU, Target: util(corev1.ResourceCPU, 55)}}}
+		if order {
+			ms[0], ms[1] = ms[1], ms[0]
+		}
+		h3 := h2.DeepCopy()
+		h3.Name, h3.Spec.Metrics = "both", ms
+		if got := listHPAs(context.Background(), fake.NewClientset(h3), &warn); len(got) != 1 || got[0].CPUTarget != 40 || got[0].CPUContainer != "app" {
+			t.Fatalf("both metrics (swapped=%v): %+v", order, got)
+		}
 	}
 	cs := fake.NewClientset()
 	cs.PrependReactor("list", "horizontalpodautoscalers", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -470,8 +516,37 @@ func TestListHPAs(t *testing.T) {
 	}
 }
 
+func TestListLimitRanges(t *testing.T) {
+	lr := &corev1.LimitRange{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "l"}, Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{
+		{Type: corev1.LimitTypeContainer, Min: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")}}}}}
+	var warn strings.Builder
+	got := listLimitRanges(context.Background(), fake.NewClientset(lr), &warn)
+	if len(got["shop"]) != 1 || warn.Len() > 0 {
+		t.Fatalf("got %+v warn %q", got, warn.String())
+	}
+	// The whole path: a 1Gi container that uses 10Mi is sized to 32Mi, below the 128Mi minimum.
+	s := snapshot{nodes: []report.Node{{Name: "n1", Capacity: report.Resources{MilliCPU: 1000, MemBytes: 4 << 30}}}, limitRanges: got,
+		pods: []report.Pod{{Namespace: "shop", Name: "web-1", Workload: "Deployment/web", Node: "n1", Containers: []report.Container{
+			{Name: "app", Request: report.Resources{MilliCPU: 100, MemBytes: 1 << 30}, HasUsage: true, Usage: report.Resources{MilliCPU: 80, MemBytes: 10 << 20}}}}}}
+	e := assemble(context.Background(), s, report.Prices{CPUHour: 1, GiBHour: 1}, nil, io.Discard, time.Now())
+	if len(e.Recs) != 1 || note(e.Recs[0]) != "the namespace's LimitRange rejects this size" {
+		t.Fatalf("recs %+v", e.Recs)
+	}
+	cs := fake.NewClientset()
+	cs.PrependReactor("list", "limitranges", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "limitranges"}, "", errors.New("rbac"))
+	})
+	if got := listLimitRanges(context.Background(), cs, &warn); got != nil || strings.Count(warn.String(), "\n") != 1 {
+		t.Fatalf("forbidden: got %+v warn %q", got, warn.String())
+	}
+}
+
 func TestNoteHPA(t *testing.T) {
 	if got := note(report.Rec{HPA: &report.HPARef{Name: "web", Resources: []string{"cpu", "memory"}}}); got != "HPA: web (cpu, memory)" {
+		t.Fatal(got)
+	}
+	adv := report.HPARef{Name: "api", Advice: []report.TargetAdvice{{Resource: "cpu", From: 50, Saving: 120}}}
+	if got := note(report.Rec{HPA: &adv}); got != "Raise HPA api CPU target 50% → 70%: saves ~$120/mo" {
 		t.Fatal(got)
 	}
 }
@@ -611,5 +686,211 @@ func TestListPagedErrorMidway(t *testing.T) {
 	}, metav1.ListOptions{FieldSelector: "status.phase=Running"})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+func TestCheckFlags(t *testing.T) {
+	defer func() { asCSV, asMD, shareIdle, topN, onlyNS, skipNS = false, false, false, 0, nil, nil }()
+	for _, c := range []struct {
+		json, noRecs, csv, md, share bool
+		top                          int
+		ns, skip                     []string
+		ok                           bool
+	}{
+		{ok: true}, {json: true, ok: true}, {noRecs: true, ok: true}, {csv: true, ok: true},
+		{csv: true, top: 3, ns: []string{"a"}, ok: true}, {md: true, top: 3, ns: []string{"a"}, ok: true},
+		{json: true, csv: true}, {json: true, md: true}, {csv: true, md: true}, {top: -1},
+		{json: true, top: 1}, {json: true, ns: []string{"a"}},
+		{noRecs: true, top: 1}, {noRecs: true, ns: []string{"a"}}, {noRecs: true, md: true},
+		{csv: true, skip: []string{"a"}, ok: true}, {ns: []string{"a"}, skip: []string{"b"}}, {json: true, skip: []string{"a"}}, {noRecs: true, skip: []string{"a"}},
+		{share: true, ok: true}, {share: true, json: true, ok: true}, {share: true, csv: true}, {share: true, md: true}, {share: true, noRecs: true},
+	} {
+		asCSV, asMD, shareIdle, topN, onlyNS, skipNS = c.csv, c.md, c.share, c.top, c.ns, c.skip
+		if err := checkFlags(c.json, c.noRecs); (err == nil) != c.ok {
+			t.Errorf("%+v: %v", c, err)
+		}
+	}
+}
+
+func TestTop(t *testing.T) {
+	defer func() { asCSV, asMD, topN = false, false, 0 }()
+	show := func(n int, csv, md bool) string {
+		topN, asCSV, asMD = n, csv, md
+		var out strings.Builder
+		if err := output(context.Background(), &out, demoSnapshot(), report.Prices{CPUHour: 0.03}, nil, false, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	net := func(s string) string {
+		_, s, _ = strings.Cut(s, "\nnet saving ")
+		s, _, _ = strings.Cut(s, "/month")
+		return s
+	}
+	lines := strings.SplitAfter(show(0, true, false), "\n") // header, rows, ""
+	count := len(lines) - 2
+	if count < 3 {
+		t.Fatalf("the demo needs 3 recommendations, has %d", count)
+	}
+	for _, n := range []int{1, 2, count, count + 5} {
+		rows := min(n, count)
+		if got, want := show(n, true, false), strings.Join(lines[:rows+1], ""); got != want {
+			t.Errorf("--top %d --csv:\n%s\nwant\n%s", n, got, want)
+		}
+		if got := strings.Count(show(n, false, true), "\n"); got != rows+2 {
+			t.Errorf("--top %d --markdown: %d lines, want %d", n, got, rows+2)
+		}
+		all, table := show(0, false, false), show(n, false, false)
+		if net(table) == "" || net(table) != net(all) {
+			t.Errorf("--top %d: net saving %q, want %q", n, net(table), net(all))
+		}
+		if got, want := strings.Contains(table, fmt.Sprintf("%d more recommendation(s)", count-rows)), rows < count; got != want {
+			t.Errorf("--top %d: says what it left out: %v, want %v", n, got, want)
+		}
+	}
+
+	// Equal savings: the names decide, not the order of the pods.
+	var pods []report.Pod
+	for _, n := range []string{"c", "a", "b"} {
+		pods = append(pods, report.Pod{Namespace: "shop", Workload: n, Node: "n1", Containers: []report.Container{{Name: "app", HasUsage: true,
+			Request: report.Resources{MilliCPU: 1000}, Usage: report.Resources{MilliCPU: 100}}}})
+	}
+	topN = 2
+	got := top(report.Build(nil, pods, report.Prices{CPUHour: 0.03}).Recs)
+	if len(got) != 2 || got[0].Workload != "a" || got[1].Workload != "b" {
+		t.Errorf("ties: %+v", got)
+	}
+}
+
+func TestNamespaceFilter(t *testing.T) {
+	for v, want := range map[string][]string{"shop": {"shop"}, "shop, kube-system": {"shop", "kube-system"}, "": nil, "shop,": nil} {
+		if got, err := parseList("namespace", v); !slices.Equal(got, want) || (err == nil) != (want != nil) {
+			t.Errorf("parseList(%q) = %v, %v", v, got, err)
+		}
+	}
+
+	s := demoSnapshot()
+	show := func(csv bool, only ...string) (string, error) {
+		onlyNS, asCSV = only, csv
+		defer func() { onlyNS, asCSV = nil, false }()
+		var out strings.Builder
+		err := output(context.Background(), &out, s, report.Prices{CPUHour: 0.03}, nil, false, time.Time{})
+		return out.String(), err
+	}
+	var other, one string
+	for _, r := range report.Build(s.nodes, s.pods, report.Prices{CPUHour: 0.03}).Recs {
+		if one == "" {
+			one = r.Namespace
+		} else if r.Namespace != one {
+			other = r.Namespace
+		}
+	}
+	if other == "" {
+		t.Fatal("the demo needs recommendations in two namespaces")
+	}
+	full, err := show(true)
+	if err != nil || !strings.Contains(full, other+",") {
+		t.Fatalf("unfiltered CSV, err %v:\n%s", err, full)
+	}
+	got, err := show(true, one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want strings.Builder // the header and the namespace's own rows, figures unchanged
+	for i, l := range strings.SplitAfter(full, "\n") {
+		if i == 0 || strings.HasPrefix(l, one+",") {
+			want.WriteString(l)
+		}
+	}
+	if got != want.String() {
+		t.Errorf("CSV of %s:\n%s\nwant\n%s", one, got, want.String())
+	}
+	table, err := show(false, one)
+	if err != nil || strings.Contains(table, "\nSTORAGE") || strings.Contains(table, other+"/") || !strings.Contains(table, one+"/") ||
+		!strings.Contains(table, "only namespaces "+one+";") {
+		t.Errorf("tables of %s, err %v:\n%s", one, err, table)
+	}
+
+	skip := func(csv bool, ns ...string) (string, error) {
+		skipNS = ns
+		defer func() { skipNS = nil }()
+		return show(csv)
+	}
+	got, err = skip(true, one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rest strings.Builder // everything but the namespace's own rows
+	for _, l := range strings.SplitAfter(full, "\n") {
+		if !strings.HasPrefix(l, one+",") {
+			rest.WriteString(l)
+		}
+	}
+	if got != rest.String() {
+		t.Errorf("CSV without %s:\n%s\nwant\n%s", one, got, rest.String())
+	}
+	table, err = skip(false, one)
+	if err != nil || strings.Contains(table, "\nSTORAGE") || strings.Contains(table, one+"/") || !strings.Contains(table, other+"/") ||
+		!strings.Contains(table, "without namespaces "+one+";") {
+		t.Errorf("tables without %s, err %v:\n%s", one, err, table)
+	}
+	// Spec 033: the list and its counter follow the filter; payments/Deployment/worker is OOM-killed and at its CPU limit.
+	// The HPA shows the snapshot's HPAs reach the list.
+	s.hpas = []report.HPA{{Namespace: "checkout", Name: "web-hpa", Target: "Deployment/web", MinReplicas: 1, Replicas: 4, MaxReplicas: 4}}
+	for _, c := range []struct {
+		f       func(bool, ...string) (string, error)
+		ns      []string
+		n       int
+		pay, co bool
+	}{{show, nil, 3, true, true}, {show, []string{"payments"}, 2, true, false}, {skip, []string{"payments"}, 1, false, true}, {show, []string{"monitoring"}, 0, false, false}} {
+		out, err := c.f(false, c.ns...)
+		_, list, _ := strings.Cut(out, "\nAT RISK ")
+		if err != nil || strings.HasPrefix(list, fmt.Sprintf("(%d)\n", c.n)) != (c.n > 0) || strings.Contains(list, "OOM-killed") != c.pay || strings.Contains(list, "HPA web-hpa at its maximum, 4 replicas") != c.co {
+			t.Errorf("AT RISK of %v, err %v:\n%s", c.ns, err, list)
+		}
+	}
+	s.hpas = nil
+	if out, err := skip(false, "no-such"); err == nil || out != "" || !strings.Contains(err.Error(), "no-such") {
+		t.Errorf("unknown excluded namespace: %q, %v", out, err)
+	}
+	var all []string
+	for _, l := range report.Build(s.nodes, s.pods, report.Prices{}).Namespaces {
+		all = append(all, l.Namespace)
+	}
+	if out, err := skip(false, all...); err == nil || out != "" || !strings.Contains(err.Error(), "every namespace") {
+		t.Errorf("all namespaces excluded: %q, %v", out, err)
+	}
+	shareIdle = true
+	defer func() { shareIdle = false }()
+	if out, err := show(false); err != nil || !strings.Contains(out, "IDLE SHARE  WITH IDLE") || !strings.Contains(out, "\nidle     shared per node by cost;") {
+		t.Errorf("--share-idle, err %v:\n%s", err, out)
+	}
+	shareIdle = false
+	if out, err := show(false, one, "no-such"); err == nil || out != "" || !strings.Contains(err.Error(), "no-such") {
+		t.Errorf("unknown namespace: %q, %v", out, err)
+	}
+}
+
+func TestRunEach(t *testing.T) {
+	var out, warn strings.Builder
+	err := runEach(&out, &warn, []string{"dead", "prod", "stage"}, func(w io.Writer, c string) error {
+		if c == "dead" {
+			fmt.Fprintln(w, "half a report")
+			return errors.New("no route")
+		}
+		fmt.Fprintln(w, "report", c)
+		return nil
+	})
+	if err == nil || err.Error() != "1 of 3 contexts failed" {
+		t.Error(err)
+	}
+	if want := "## prod\n\nreport prod\n\n## stage\n\nreport stage\n\n"; out.String() != want {
+		t.Errorf("%q", out.String())
+	}
+	if want := "phrontis: context dead: no route\n"; warn.String() != want {
+		t.Errorf("%q", warn.String())
+	}
+	if err := runEach(io.Discard, io.Discard, []string{"prod"}, func(io.Writer, string) error { return nil }); err != nil {
+		t.Error(err)
 	}
 }

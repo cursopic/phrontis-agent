@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"testing"
+	"time"
 )
 
 const mi, gi = 1 << 20, 1 << 30
@@ -20,12 +21,12 @@ func TestBuild(t *testing.T) {
 	nodes := []Node{{Name: "n1", Capacity: Resources{4000, 8 * gi}}}
 	pods := []Pod{
 		// over-requested deployment, two replicas
-		{"shop", "web-a", "Deployment/web", "n1", []Container{ct("app", Resources{1000, 2 * gi}, Resources{100, 200 * mi}, true)}, false, nil},
-		{"shop", "web-b", "Deployment/web", "n1", []Container{ct("app", Resources{1000, 2 * gi}, Resources{120, 300 * mi}, true)}, false, nil},
+		{"shop", "web-a", "Deployment/web", "n1", []Container{ct("app", Resources{1000, 2 * gi}, Resources{100, 200 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false},
+		{"shop", "web-b", "Deployment/web", "n1", []Container{ct("app", Resources{1000, 2 * gi}, Resources{120, 300 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false},
 		// no requests at all: charged by usage, told to set them
-		{"ops", "cron", "Pod/cron", "n1", []Container{ct("job", Resources{}, Resources{500, 100 * mi}, true)}, false, nil},
+		{"ops", "cron", "Pod/cron", "n1", []Container{ct("job", Resources{}, Resources{500, 100 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false},
 		// unmeasured: charged by request, never sized
-		{"ops", "new", "Pod/new", "n1", []Container{ct("app", Resources{200, 64 * mi}, Resources{}, false)}, false, nil},
+		{"ops", "new", "Pod/new", "n1", []Container{ct("app", Resources{200, 64 * mi}, Resources{}, false)}, false, nil, false, false, false, false, false, false, nil, false, false},
 		// static pod: costed, never sized
 		{Namespace: "kube-system", Name: "etcd", Workload: "Pod/etcd", Node: "n1", Static: true, Containers: []Container{ct("etcd", Resources{100, 0}, Resources{20, 50 * mi}, true)}},
 	}
@@ -47,11 +48,75 @@ func TestBuild(t *testing.T) {
 	if web.Workload != "Deployment/web" || web.Pods != 2 || web.Recommended != wantRec {
 		t.Fatalf("web rec = %+v", web)
 	}
+	if web.Pod != "web-a" || web.CPUUsage != 120 || web.MemUsage != 300*mi {
+		t.Errorf("web pod, usage = %q %d %d", web.Pod, web.CPUUsage, web.MemUsage)
+	}
+	near(t, "web cost", web.MonthlyCost, 2*p.Monthly(Resources{1000, 2 * gi}))
 	near(t, "web saving", web.MonthlySaving, 2*p.Monthly(Resources{1000, 2 * gi})-2*p.Monthly(wantRec))
 
 	cron := r.Recs[1]
 	if cron.Workload != "Pod/cron" || cron.Recommended != (Resources{600, 130 * mi}) || cron.MonthlySaving >= 0 {
 		t.Fatalf("cron rec = %+v (raising a request costs money, saving must be negative)", cron)
+	}
+}
+
+// S51: each node's idle goes to its pods by cost; an empty node's idle and an unlisted node's pods stay out.
+func TestShareIdle(t *testing.T) {
+	p := Prices{CPUHour: 0.03, GiBHour: 0.004}
+	nodes := []Node{
+		{Name: "n1", Capacity: Resources{4000, 8 * gi}},
+		{Name: "n2", Capacity: Resources{2000, 4 * gi}, Prices: Prices{CPUHour: 0.06, GiBHour: 0.008}},
+		{Name: "empty", Capacity: Resources{1000, 2 * gi}},
+	}
+	pod := func(ns, node string, cpu int64) Pod {
+		return Pod{Namespace: ns, Name: ns, Workload: "Pod/" + ns, Node: node, Containers: []Container{ct("app", Resources{cpu, 0}, Resources{}, false)}}
+	}
+	r := Build(nodes, []Pod{pod("a", "n1", 1000), pod("b", "n1", 3000), pod("b", "n2", 500), pod("gone", "nx", 100), pod("zero", "empty", 0)}, p)
+	if r.IdleUnshared != 0 || r.Namespaces[0].IdleShare != 0 {
+		t.Fatal("shared without ShareIdle")
+	}
+	r.ShareIdle()
+	m1, n2 := p.Monthly(Resources{0, 8 * gi}), nodes[1].Prices.Monthly(Resources{1500, 4 * gi})
+	empty := p.Monthly(nodes[2].Capacity)
+	near(t, "unshared", r.IdleUnshared, empty)
+	want := map[string]float64{"a": m1 / 4, "b": m1*3/4 + n2, "gone": 0, "zero": 0}
+	for _, ls := range [][]Line{r.Namespaces, r.Workloads} {
+		total := r.IdleUnshared
+		for _, l := range ls {
+			near(t, l.Namespace+l.Workload, l.IdleShare, want[l.Namespace])
+			if l.Namespace != "gone" {
+				total += l.Monthly + l.IdleShare
+			}
+		}
+		near(t, "lines + unshared", total, r.Monthly)
+	}
+}
+
+// S50: usage in percent of the request, per resource, over the containers that have both.
+func TestUsePct(t *testing.T) {
+	pod := func(wl string, cs ...Container) Pod {
+		return Pod{Namespace: "ns", Workload: wl, Node: "n1", Containers: cs}
+	}
+	r := Build(nil, []Pod{
+		pod("web", ct("app", Resources{1000, 1 * gi}, Resources{100, 512 * mi}, true)),
+		pod("web", ct("app", Resources{1000, 1 * gi}, Resources{300, 512 * mi}, true),
+			ct("new", Resources{5000, 8 * gi}, Resources{}, false), // unmeasured: in neither sum
+			ct("free", Resources{}, Resources{900, 8 * gi}, true)), // no request: in neither sum
+		pod("cpu", ct("app", Resources{100, 0}, Resources{200, 1 * gi}, true)), // over its request; no memory request
+		pod("none", ct("app", Resources{}, Resources{200, 1 * gi}, true)),
+	}, Prices{CPUHour: 0.03, GiBHour: 0.004})
+	got := map[string]Line{}
+	for _, l := range slices.Concat(r.Namespaces, r.Workloads) {
+		got[l.Workload] = l
+	}
+	for wl, want := range map[string][2]float64{"web": {20, 50}, "cpu": {200, -1}, "none": {-1, -1}, "": {100 * 600. / 2100, 50}} {
+		for i, p := range []*float64{got[wl].CPUPct, got[wl].MemPct} {
+			if (p == nil) != (want[i] < 0) {
+				t.Errorf("%q %d: nil is %v, want %v", wl, i, p == nil, want[i] < 0)
+			} else if p != nil {
+				near(t, wl, *p, want[i])
+			}
+		}
 	}
 }
 
@@ -66,7 +131,7 @@ func TestOvercommittedNodeKeepsTotal(t *testing.T) {
 		{Name: "n3", Capacity: Resources{1000, 1 * gi}}, // requests 2000m on 1000m (stale snapshot): halved
 	}
 	pod := func(name, node string, req, use Resources) Pod {
-		return Pod{"ns", name, "Pod/" + name, node, []Container{ct("app", req, use, true)}, false, nil}
+		return Pod{"ns", name, "Pod/" + name, node, []Container{ct("app", req, use, true)}, false, nil, false, false, false, false, false, false, nil, false, false}
 	}
 	pods := []Pod{
 		pod("big", "n1", Resources{1500, 1 * gi}, Resources{100, 200 * mi}),
@@ -94,7 +159,7 @@ func TestOvercommittedNodeKeepsTotal(t *testing.T) {
 }
 
 func TestSmallGapIsNotARecommendation(t *testing.T) {
-	pods := []Pod{{"a", "p", "Pod/p", "n", []Container{ct("c", Resources{120, 130 * mi}, Resources{100, 100 * mi}, true)}, false, nil}}
+	pods := []Pod{{"a", "p", "Pod/p", "n", []Container{ct("c", Resources{120, 130 * mi}, Resources{100, 100 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false}}
 	r := Build(nil, pods, Prices{1, 1})
 	if len(r.Recs) != 0 {
 		t.Fatalf("120m/130Mi vs recommended 120m/130Mi is no change, got %+v", r.Recs)
@@ -120,10 +185,10 @@ func TestBuildPerNodePrices(t *testing.T) {
 	flat := Prices{CPUHour: 0.03, GiBHour: 0.004}
 	cheap, dear := Prices{0.01, 0.001}, Prices{0.05, 0.005}
 	c := Resources{4000, 8 * gi}
-	nodes := []Node{{"a", c, cheap}, {"b", c, dear}, {Name: "c", Capacity: c}} // c has no price: flat
+	nodes := []Node{{Name: "a", Capacity: c, Prices: cheap}, {Name: "b", Capacity: c, Prices: dear}, {Name: "c", Capacity: c}} // c has no price: flat
 	// Two replicas of one workload, on a and b; usage 100m/100Mi each.
 	mk := func(name, node string) Pod {
-		return Pod{"ns", name, "Deployment/w", node, []Container{ct("app", Resources{1000, 2 * gi}, Resources{100, 100 * mi}, true)}, false, nil}
+		return Pod{"ns", name, "Deployment/w", node, []Container{ct("app", Resources{1000, 2 * gi}, Resources{100, 100 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false}
 	}
 	r := Build(nodes, []Pod{mk("p1", "a"), mk("p2", "b"), mk("p3", "gone")}, flat)
 
@@ -141,7 +206,7 @@ func TestBuildPerNodePrices(t *testing.T) {
 func TestUnlistedNodeBurstIsFlat(t *testing.T) {
 	flat := Prices{CPUHour: 0.03, GiBHour: 0.004}
 	req, use := Resources{100, 64 * mi}, Resources{900, 512 * mi}
-	r := Build(nil, []Pod{{"ns", "p", "Pod/p", "gone", []Container{ct("app", req, use, true)}, false, nil}}, flat)
+	r := Build(nil, []Pod{{"ns", "p", "Pod/p", "gone", []Container{ct("app", req, use, true)}, false, nil, false, false, false, false, false, false, nil, false, false}}, flat)
 	near(t, "workload", r.Workloads[0].Monthly, flat.Monthly(use))
 }
 
@@ -179,10 +244,10 @@ func TestWindow(t *testing.T) {
 	for i := int64(1); i <= 20; i++ {
 		c := ct("app", Resources{1000, gi}, Resources{i * 10, (100 - i) * mi}, true)
 		c.OOMKilled = i == 3 // seen once, kept for the whole window
-		w.Add([]Pod{{Namespace: "ns", Name: "p", Workload: "Deployment/w", Containers: []Container{c}}})
+		w.Add(time.Time{}, []Pod{{Namespace: "ns", Name: "p", Workload: "Deployment/w", Containers: []Container{c}}})
 	}
 	last := []Pod{{Namespace: "ns", Name: "p2", Workload: "Deployment/w", Containers: []Container{ct("app", Resources{1000, gi}, Resources{}, false)}}}
-	w.Add(last) // the newest replica has no metrics yet: it still gets the workload's window
+	w.Add(time.Time{}, last) // the newest replica has no metrics yet: it still gets the workload's window
 	got := w.Pods()
 	c := got[0].Containers[0]
 	if w.Samples != 21 || len(got) != 1 || got[0].Name != "p2" || c.Usage != (Resources{190, 99 * mi}) || !c.HasUsage || !c.OOMKilled {
@@ -201,14 +266,14 @@ func TestOOMFloorIsTakenAtTheKill(t *testing.T) {
 		return []Pod{{Namespace: "a", Name: "p", Workload: "Deployment/w", Containers: []Container{c}}}
 	}
 	c := Container{Name: "app", Request: Resources{100, 256 * mi}, Limit: Resources{0, 512 * mi}, Usage: Resources{100, 400 * mi}, HasUsage: true, OOMKilled: true}
-	w.Add(pod(c)) // one kill at 512Mi, usage 400Mi
+	w.Add(time.Time{}, pod(c)) // one kill at 512Mi, usage 400Mi
 	for i := range 6 {
 		rec := Build(nil, w.Pods(), Prices{}).Sizes[0].Requests
 		if rec != (Resources{120, 666 * mi}) {
 			t.Fatalf("cycle %d: rec = %dMi, want a stable 666Mi (512Mi*1.3)", i, rec.MemBytes/mi)
 		}
 		c.Request, c.Limit.MemBytes, c.OOMKilled = rec, max(512*mi, rec.MemBytes), false // the next pod, as Mutate sizes it
-		w.Add(pod(c))
+		w.Add(time.Time{}, pod(c))
 	}
 }
 
@@ -262,11 +327,11 @@ func TestSeenKeepsScaledToZero(t *testing.T) {
 	var w Window
 	oom := ct("app", Resources{100, 256 * mi}, Resources{100, 100 * mi}, true)
 	oom.Limit.MemBytes, oom.OOMKilled = 512*mi, true
-	w.Add([]Pod{
+	w.Add(time.Time{}, []Pod{
 		{Namespace: "a", Name: "d", Workload: "Deployment/d", Containers: []Container{oom}},
 		{Namespace: "a", Name: "j", Workload: "Job/j", Containers: []Container{ct("run", Resources{100, 256 * mi}, Resources{100, 100 * mi}, true)}},
 	})
-	w.Add(nil) // both gone
+	w.Add(time.Time{}, nil) // both gone
 	want := []Size{{"a", "Deployment/d", "app", Resources{120, 666 * mi}}}
 	if got := Build(nil, w.Seen(), Prices{}).Sizes; !slices.Equal(got, want) || len(w.Pods()) != 0 {
 		t.Fatalf("sizes = %+v, pods = %+v; want %+v and no pods", got, w.Pods(), want)
@@ -275,13 +340,14 @@ func TestSeenKeepsScaledToZero(t *testing.T) {
 
 func TestBuildStorage(t *testing.T) {
 	const g = 1 << 30
+	day1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	vols := []Volume{
-		{"a", "shop", "data", 100 * g, "gp3"},
-		{"b", "shop", "logs", 50 * g, "gp3"},
-		{"c", "db", "pg", 10 * g, "io2"},
-		{"d", "shop", "tmp", 5 * g, ""}, // not EBS: counted, unpriced
-		{"e", "", "", 20 * g, "gp3"},    // Released: unclaimed
-		{"f", "", "", 1 * g, "mystery"}, // a type with no price
+		{"a", "shop", "data", 100 * g, "gp3", "", time.Time{}},
+		{"b", "shop", "logs", 50 * g, "gp3", "", time.Time{}},
+		{"c", "db", "pg", 10 * g, "io2", "", time.Time{}},
+		{"d", "shop", "tmp", 5 * g, "", "", time.Time{}}, // not EBS: counted, unpriced
+		{"e", "", "", 20 * g, "gp3", "fast", day1},       // Released: unclaimed
+		{"f", "", "", 1 * g, "mystery", "", time.Time{}}, // a type with no price
 	}
 	s := BuildStorage(vols, map[string]float64{"gp3": 0.1, "io2": 0.2})
 	near := func(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
@@ -315,5 +381,46 @@ func TestBuildLoadBalancers(t *testing.T) {
 	}
 	if u := BuildLoadBalancers(lbs, nil); u.Total.Monthly != 0 || u.Total.Unpriced != 4 {
 		t.Fatalf("no prices = %+v", u)
+	}
+}
+
+func TestFloorNeverRaisesTinyRequest(t *testing.T) {
+	// 5m / 30Mi request, 1m / 10Mi usage: the 10m / 32Mi floor is above the request, so it must not become a rec (S36).
+	pods := []Pod{{"a", "p", "Pod/p", "n", []Container{ct("c", Resources{5, 30 * mi}, Resources{1, 10 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false}}
+	r := Build(nil, pods, Prices{1, 1})
+	if len(r.Recs) != 0 {
+		t.Fatalf("floor alone must not raise a request, got %+v", r.Recs)
+	}
+	if want := (Resources{5, 30 * mi}); r.Sizes[0].Requests != want {
+		t.Fatalf("size = %+v, want %+v", r.Sizes[0].Requests, want)
+	}
+	// Real usage above the request still raises it.
+	pods[0].Containers[0] = ct("c", Resources{5, 30 * mi}, Resources{50, 100 * mi}, true)
+	if r = Build(nil, pods, Prices{1, 1}); len(r.Recs) != 1 || r.Recs[0].Recommended.MilliCPU < 50 {
+		t.Fatalf("usage above request must still be recommended, got %+v", r.Recs)
+	}
+}
+
+func TestFloorSavingNeverNegativePerReplica(t *testing.T) {
+	// Replica a requests 500m / 256Mi, replica b 5m / 30Mi; both use 1m / 10Mi. The rec is 10m / 32Mi (the floor).
+	// b must not show a cost for the floor: its saving is 0, a's is the full cut (S36b).
+	mk := func(name string, req Resources) Pod {
+		return Pod{"ns", name, "Deployment/w", "n", []Container{ct("c", req, Resources{1, 10 * mi}, true)}, false, nil, false, false, false, false, false, false, nil, false, false}
+	}
+	pr := Prices{1, 1}
+	r := Build(nil, []Pod{mk("a", Resources{500, 256 * mi}), mk("b", Resources{5, 30 * mi})}, pr)
+	if len(r.Recs) != 1 {
+		t.Fatalf("recs = %+v", r.Recs)
+	}
+	rec := r.Recs[0]
+	want := pr.Monthly(Resources{500, 256 * mi}) - pr.Monthly(Resources{10, 32 * mi})
+	if rec.Recommended != (Resources{10, 32 * mi}) || math.Abs(rec.MonthlySaving-want) > 1e-9 || rec.CPUSaving < 0 {
+		t.Fatalf("rec = %+v, want saving %v", rec, want)
+	}
+	// Real usage above a replica's request is still recommended, and its growth still counts.
+	up := mk("c", Resources{5, 30 * mi})
+	up.Containers[0].Usage = Resources{50, 100 * mi}
+	if r = Build(nil, []Pod{up}, pr); len(r.Recs) != 1 || r.Recs[0].MonthlySaving >= 0 {
+		t.Fatalf("upward rec must keep a negative saving, got %+v", r.Recs)
 	}
 }

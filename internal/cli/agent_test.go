@@ -78,6 +78,11 @@ func TestControllerRunning(t *testing.T) {
 func TestAgentShips(t *testing.T) {
 	cs, mc := agentFakes()
 	cs.Tracker().Add(controllerPod("phrontis", corev1.ConditionTrue, autoscalerLabels, "apply")) // no node: not in Pods
+	cs.Tracker().Add(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "stuck-0", CreationTimestamp: metav1.NewTime(time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC))},
+		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+			LastTransitionTime: metav1.NewTime(time.Date(2026, 11, 27, 10, 1, 0, 0, time.UTC))}}}}) // pending: in Pending, never in Pods
+	cs.Tracker().Add(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pulling-0", CreationTimestamp: metav1.NewTime(time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC))},
+		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}}}) // scheduled, pulling an image: not short of nodes, not in Pending
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls atomic.Int32
@@ -93,7 +98,8 @@ func TestAgentShips(t *testing.T) {
 		if err := dec.Decode(&s); err != nil {
 			t.Errorf("call %d: API would reject the body: %v", n, err)
 		}
-		if len(s.Nodes) != 1 || len(s.Pods) != 1 || len(s.Volumes) != 1 || len(s.LoadBalancers) != 1 || len(s.HPAs) != 1 || s.Keys["n1"].Type != "m5.large" || !s.WorkloadController || s.ClusterUID != "uid-1" {
+		if len(s.Nodes) != 1 || len(s.Pods) != 1 || len(s.Volumes) != 1 || len(s.LoadBalancers) != 1 || len(s.HPAs) != 1 || s.Keys["n1"].Type != "m5.large" || !s.WorkloadController || s.ClusterUID != "uid-1" ||
+			len(s.Pending) != 1 || s.Pending[0].Name != "stuck-0" || s.Pending[0].Since.Minute() != 1 {
 			t.Errorf("call %d: sample = %+v", n, s)
 		}
 		if n == 1 {
