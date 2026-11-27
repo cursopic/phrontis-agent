@@ -18,6 +18,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 
@@ -33,7 +34,8 @@ type sample struct {
 	Volumes       []report.Volume
 	LoadBalancers []report.LoadBalancer
 	PDBs          []report.PDB
-	HPAs          []report.HPA `json:",omitempty"` // omitted when none, so an API older than #229 still takes the sample
+	Pending       []report.PendingPod `json:",omitempty"` // S87: omitted when none; an API without the field refuses a sample that has them
+	HPAs          []report.HPA        `json:",omitempty"` // omitted when none, so an API older than #229 still takes the sample
 
 	WorkloadController bool   `json:",omitempty"`
 	ClusterUID         string `json:",omitempty"`
@@ -108,7 +110,7 @@ func shipOnce(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface
 		return err
 	}
 	s := sample{Nodes: nodes, Pods: pods, Keys: keys, Volumes: vols, LoadBalancers: lbs, PDBs: pdbs, WorkloadController: ctl,
-		HPAs: listHPAs(ctx, cs, hpaWarn)}
+		HPAs: listHPAs(ctx, cs, hpaWarn), Pending: listPending(ctx, cs, log)}
 	// The kube-system UID names the cluster (#134). Without it (say, the RBAC of an older chart) the sample still feeds
 	// the report.
 	if ns, err := cs.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{}); err == nil {
@@ -117,6 +119,44 @@ func shipOnce(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface
 		fmt.Fprintln(log, "phrontis agent: no cluster UID in this sample, so the node policy cannot be checked against this cluster:", err)
 	}
 	return PostJSON(ctx, hc, endpoint, key, s)
+}
+
+// maxPending bounds the sample: a cluster with thousands of pending pods still sends the oldest 50.
+const maxPending = 50
+
+// listPending lists pods in phase Pending (a list on pods, which the agent already has). A failure is logged and the
+// sample goes without them. shortcut: the workload is the pod's direct owner (a ReplicaSet, not its Deployment).
+func listPending(ctx context.Context, cs kubernetes.Interface, log io.Writer) []report.PendingPod {
+	list, err := listPaged[corev1.Pod](ctx, func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+		return cs.CoreV1().Pods("").List(ctx, o)
+	}, metav1.ListOptions{FieldSelector: "status.phase=Pending"})
+	if err != nil {
+		fmt.Fprintln(log, "phrontis agent: no pending pods in this sample:", err)
+		return nil
+	}
+	var out []report.PendingPod
+	for _, p := range list {
+		if p.Status.Phase != corev1.PodPending { // the selector does the work; this keeps a lax API or fake honest
+			continue
+		}
+		// Only pods the scheduler could not place: a scheduled pod pulling an image or waiting on a volume is not short of nodes.
+		since, unscheduled := p.CreationTimestamp.Time, false
+		for _, c := range p.Status.Conditions {
+			if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+				unscheduled = true
+				if !c.LastTransitionTime.IsZero() {
+					since = c.LastTransitionTime.Time
+				}
+			}
+		}
+		if !unscheduled {
+			continue
+		}
+		wl, _ := workload(&p, nil)
+		out = append(out, report.PendingPod{Namespace: p.Namespace, Name: p.Name, Workload: wl, Since: since.UTC()})
+	}
+	slices.SortFunc(out, func(a, b report.PendingPod) int { return a.Since.Compare(b.Since) })
+	return out[:min(len(out), maxPending)]
 }
 
 // controllerRunning reports whether a ready pod labelled phrontis-autoscaler runs with --mode=apply, in any namespace

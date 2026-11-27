@@ -68,7 +68,8 @@ type Client struct {
 	mu                 sync.Mutex          // guards aws and elb; held across a download so concurrent callers wait for it instead of repeating it
 	aws                map[string]awsCache // region -> prices, so one run downloads a region once
 	elb                map[string]map[string]float64
-	Spot               SpotAPI // nil: spot nodes are priced as on-demand (the CLI has no AWS key)
+	dto                map[string]float64 // region -> USD per GB out to the internet
+	Spot               SpotAPI            // nil: spot nodes are priced as on-demand (the CLI has no AWS key)
 	spotMu             sync.Mutex
 	spot               map[string]spotCache // region/type -> last lookup
 }
@@ -497,4 +498,95 @@ func parseELB(r io.Reader) (map[string]float64, error) {
 		}
 	}
 	return out, nil
+}
+
+// DataTransferOut returns the USD per GB of the first tier (first 10 TB a month) of data transfer out of a region to the
+// internet, from the AWSDataTransfer price list. Kept in memory for the run; the file is ~0.5 MB, so there is no disk cache.
+// shortcut: first tier only, and the account-wide 100 GB free allowance is ignored; both make the estimate higher, never lower.
+func (c *Client) DataTransferOut(ctx context.Context, region string) (float64, error) {
+	if !regionRe.MatchString(region) {
+		return 0, fmt.Errorf("refusing odd region %q", region)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if p, ok := c.dto[region]; ok {
+		return p, nil
+	}
+	base := c.AWSBase
+	if base == "" {
+		base = "https://pricing.us-east-1.amazonaws.com"
+	}
+	resp, err := c.get(ctx, base+"/offers/v1.0/aws/AWSDataTransfer/current/"+region+"/index.csv")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	p, err := parseDataTransferOut(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("%w in %s", err, region)
+	}
+	if c.dto == nil {
+		c.dto = map[string]float64{}
+	}
+	c.dto[region] = p
+	return p, nil
+}
+
+var dtoCols = []string{"TermType", "Unit", "PricePerUnit", "Currency", "StartingRange", "Transfer Type", "To Location", "usageType"}
+
+// parseDataTransferOut reads an AWSDataTransfer price list CSV and returns the on-demand USD per GB of the row that starts at
+// 0 GB, goes "AWS Outbound" to "External" (the internet) and belongs to the region (the "Global-" row is the free allowance).
+// No such row, or two rows that disagree, is an error: the price is never guessed.
+func parseDataTransferOut(r io.Reader) (float64, error) {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	cr.ReuseRecord = true
+	var col map[string]int
+	price, found := 0.0, false
+	for {
+		row, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+		if col == nil {
+			if len(row) == 0 || row[0] != "SKU" {
+				continue
+			}
+			col = map[string]int{}
+			for i, name := range row {
+				col[name] = i
+			}
+			for _, name := range dtoCols {
+				if _, ok := col[name]; !ok {
+					return 0, fmt.Errorf("aws data transfer price list lacks column %q", name)
+				}
+			}
+			continue
+		}
+		f := func(name string) string {
+			if i := col[name]; i < len(row) {
+				return row[i]
+			}
+			return ""
+		}
+		if f("TermType") != "OnDemand" || f("Transfer Type") != "AWS Outbound" || f("To Location") != "External" || f("StartingRange") != "0" ||
+			f("Unit") != "GB" || f("Currency") != "USD" || strings.HasPrefix(f("usageType"), "Global-") || !strings.HasSuffix(f("usageType"), "DataTransfer-Out-Bytes") {
+			continue
+		}
+		p, err := strconv.ParseFloat(f("PricePerUnit"), 64)
+		if err != nil || math.IsInf(p, 0) || math.IsNaN(p) || p <= 0 || (found && p != price) {
+			return 0, errors.New("unusable data transfer price")
+		}
+		price, found = p, true
+	}
+	if col == nil {
+		return 0, errors.New("aws data transfer price list has no SKU header row")
+	}
+	if !found {
+		return 0, errors.New("no data transfer out price")
+	}
+	return price, nil
 }

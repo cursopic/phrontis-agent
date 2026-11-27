@@ -11,6 +11,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8slabels "k8s.io/apimachinery/pkg/labels"
@@ -36,6 +38,7 @@ import (
 	metrics "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"github.com/cursopic/phrontis/internal/nodepolicy"
+	"github.com/cursopic/phrontis/internal/perms"
 	"github.com/cursopic/phrontis/internal/pricing"
 	"github.com/cursopic/phrontis/internal/report"
 )
@@ -59,6 +62,20 @@ func Main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "permissions" {
+		switch {
+		case len(os.Args) == 2:
+			perms.Text(os.Stdout)
+		case os.Args[2] == "--md":
+			perms.Markdown(os.Stdout)
+		case os.Args[2] == "--json":
+			os.Stdout.Write(perms.JSON())
+		default:
+			fmt.Fprintln(os.Stderr, "usage: phrontis permissions [--md|--json]")
+			os.Exit(2)
+		}
+		return
+	}
 	for _, c := range Commands {
 		if c.Match(os.Args[1:]) {
 			if err := c.Run(os.Args[1:]); err != nil {
@@ -68,6 +85,13 @@ func Main() {
 			return
 		}
 	}
+	if len(os.Args) > 1 && os.Args[1] == "predict" {
+		if err := predict(os.Args[2:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "phrontis:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 4 && os.Args[1] == "compare" {
 		if err := compare(os.Stdout, os.Args[2], os.Args[3]); err != nil {
 			fmt.Fprintln(os.Stderr, "phrontis:", err)
@@ -75,28 +99,83 @@ func Main() {
 		}
 		return
 	}
-	kctx := flag.String("context", "", "kubeconfig context (default: current)")
+	var ctxs []string
+	flag.Func("context", "kubeconfig context (default: current); several, comma-separated or repeated, print one report each (tables and --markdown), one after the other", func(v string) error {
+		if v == "" { // a script's unset variable: the current context
+			return nil
+		}
+		cs, err := parseList("context", v)
+		for _, c := range cs {
+			if !slices.Contains(ctxs, c) {
+				ctxs = append(ctxs, c)
+			}
+		}
+		return err
+	})
 	cpuHour := flag.Float64("cpu-hour", DefaultPrices.CPUHour, "price of one vCPU for one hour")
 	gibHour := flag.Float64("gib-hour", DefaultPrices.GiBHour, "price of one GiB of memory for one hour")
 	window := flag.Duration("window", 0, "sample usage every 30s for this long (0 = one sample)")
 	asJSON := flag.Bool("json", false, "print the report as JSON (what web/ reads) instead of tables")
+	flag.BoolVar(&asCSV, "csv", false, "print the recommendations as CSV (one row per container) instead of tables")
+	flag.BoolVar(&asMD, "markdown", false, "print the recommendations as a Markdown table, with the columns of --csv, instead of tables")
+	flag.IntVar(&topN, "top", 0, "list only the n recommendations with the largest saving (tables, --csv and --markdown; 0 = all)")
+	flag.BoolVar(&shareIdle, "share-idle", false, "add to each namespace and workload its part of the idle cost, in proportion to its cost on each node (tables and --json)")
+	flag.Func("namespace", "show only these namespaces, comma-separated or repeated (tables, --csv and --markdown)", func(v string) error {
+		ns, err := parseList("namespace", v)
+		onlyNS = append(onlyNS, ns...)
+		return err
+	})
+	flag.Func("exclude-namespace", "leave these namespaces out, comma-separated or repeated; not with --namespace (tables, --csv and --markdown)", func(v string) error {
+		ns, err := parseList("namespace", v)
+		skipNS = append(skipNS, ns...)
+		return err
+	})
 	cloud := flag.Bool("cloud-prices", true, "price nodes from AWS/Azure public list prices (USD); false = flat prices only")
 	api := flag.String("api", "", "agent mode: instead of a report, POST a sample every --every to this Phrontis API (key in $PHRONTIS_API_KEY)")
+	sec := flag.Bool("security", false, "print configuration checks (privileged, host access, root, :latest, no limits) instead of the cost report")
 	every := flag.Duration("every", time.Minute, "agent mode: time between samples")
+	promURL := flag.String("prometheus", "", "read p95 CPU and peak memory over --history from this Prometheus (or Thanos, VictoriaMetrics, Mimir) instead of sampling")
+	promTokenFile := flag.String("prometheus-token-file", "", "file with the bearer token for --prometheus (read from the file only, never printed)")
+	promSelector := flag.String("prometheus-selector", "", `label matcher added as is to both --prometheus queries, e.g. 'cluster="prod"'`)
+	history := flag.String("history", "7d", "span of --prometheus history, 1h to 30d (d = days)")
 	var db *string
 	if FromDB != nil { // --db exists only in the private build
 		db = flag.String("db", "", "report from the samples the agent stored instead of the live cluster: app-role Postgres URL (cluster from $PHRONTIS_API_KEY)")
 	}
 	flag.Parse()
-	var err error
+	err := checkFlags(*asJSON, *sec || *api != "")
+	if err == nil && len(ctxs) > 1 && (*asJSON || asCSV || *sec || *api != "" || db != nil && *db != "") {
+		err = errors.New("several contexts work only with the tables and --markdown")
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "phrontis:", err)
+		os.Exit(2)
+	}
+	if err == nil {
+		err = setupProm(*promURL, *promTokenFile, *promSelector, *history, flagSet("history"), *window,
+			*api != "" || *sec || db != nil && *db != "" || len(ctxs) > 1)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "phrontis:", err)
+		os.Exit(2)
+	}
+	kctx := strings.Join(ctxs, "") // the one context, or "" for the current one
 	prices := report.Prices{CPUHour: *cpuHour, GiBHour: *gibHour}
 	switch {
+	case *sec:
+		err = securityRun(os.Stdout, kctx)
 	case *api != "":
-		err = agent(*kctx, *api, *every)
+		err = agent(kctx, *api, *every)
 	case db != nil && *db != "":
 		err = FromDB(os.Stdout, *db, prices, *window, *asJSON, *cloud, time.Now().UTC())
 	default:
-		err = run(*kctx, prices, *window, *asJSON, *cloud)
+		pr := newPricer(*cloud)
+		one := func(out io.Writer, kctx string) error { return run(out, kctx, prices, *window, *asJSON, pr) }
+		if len(ctxs) > 1 {
+			err = runEach(os.Stdout, os.Stderr, ctxs, one)
+		} else {
+			err = one(os.Stdout, kctx)
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "phrontis:", err)
@@ -138,7 +217,27 @@ func clients(kctx string) (kubernetes.Interface, metrics.Interface, string, erro
 	return cs, mc, kctx, nil
 }
 
-func run(kctx string, prices report.Prices, window time.Duration, asJSON, cloud bool) error {
+// runEach writes one report per context under its name. A context that fails does not stop the others; its error is on warn and the returned one counts them.
+func runEach(out, warn io.Writer, ctxs []string, report func(out io.Writer, kctx string) error) error {
+	failed := 0
+	for _, c := range ctxs {
+		var b bytes.Buffer // a failed context leaves no heading or half a report
+		if err := report(&b, c); err != nil {
+			fmt.Fprintf(warn, "phrontis: context %s: %v\n", c, err)
+			failed++
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "## %s\n\n%s\n", c, b.Bytes()); err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d contexts failed", failed, len(ctxs))
+	}
+	return nil
+}
+
+func run(out io.Writer, kctx string, prices report.Prices, window time.Duration, asJSON bool, pr pricer) error {
 	cs, mc, kctx, err := clients(kctx)
 	if err != nil {
 		return err
@@ -147,9 +246,16 @@ func run(kctx string, prices report.Prices, window time.Duration, asJSON, cloud 
 	if err != nil {
 		return err
 	}
-	s := snapshot{kctx, nodes, pods, keys, vols, lbs, samples, window, false, pdbs, nil}
+	s := snapshot{kctx, nodes, pods, keys, vols, lbs, samples, window, false, pdbs, nil, nil}
+	if prom != nil {
+		if s.samples, err = prom.applyHistory(context.Background(), s.pods); err != nil {
+			return err
+		}
+		s.window, s.windowed = prom.history, true
+	}
 	s.hpas = listHPAs(context.Background(), cs, os.Stderr)
-	return output(context.Background(), os.Stdout, s, prices, newPricer(cloud), asJSON, time.Now().UTC())
+	s.limitRanges = listLimitRanges(context.Background(), cs, os.Stderr)
+	return output(context.Background(), out, s, prices, pr, asJSON, time.Now().UTC())
 }
 
 // Command is a subcommand another build adds; Prefix starts its error line.
@@ -177,7 +283,7 @@ type Sample = sample
 func ReportStored(ctx context.Context, out io.Writer, label string, nodes []report.Node, pods []report.Pod, keys map[string]pricing.Key,
 	vols []report.Volume, lbs []report.LoadBalancer, samples int, window time.Duration, pdbs []report.PDB, hpas []report.HPA,
 	prices report.Prices, pr Pricer, asJSON bool, now time.Time) error {
-	return output(ctx, out, snapshot{label, nodes, pods, keys, vols, lbs, samples, window, true, pdbs, hpas}, prices, pr, asJSON, now)
+	return output(ctx, out, snapshot{label, nodes, pods, keys, vols, lbs, samples, window, true, pdbs, hpas, nil}, prices, pr, asJSON, now)
 }
 
 // Cost is the report's cost for one stored sample: nodes priced as the report prices them (priceNodes), then
@@ -189,17 +295,18 @@ func Cost(ctx context.Context, pr Pricer, nodes []report.Node, pods []report.Pod
 
 // snapshot is what a report is built from; window is the span the usage covers; windowed means usage is p95 CPU / peak memory over stored samples, not a live peak.
 type snapshot struct {
-	kctx     string
-	nodes    []report.Node
-	pods     []report.Pod
-	keys     map[string]pricing.Key
-	volumes  []report.Volume
-	lbs      []report.LoadBalancer
-	samples  int
-	window   time.Duration
-	windowed bool
-	pdbs     []report.PDB
-	hpas     []report.HPA // stored reports: the latest sample's (#229)
+	kctx        string
+	nodes       []report.Node
+	pods        []report.Pod
+	keys        map[string]pricing.Key
+	volumes     []report.Volume
+	lbs         []report.LoadBalancer
+	samples     int
+	window      time.Duration
+	windowed    bool
+	pdbs        []report.PDB
+	hpas        []report.HPA                       // stored reports: the latest sample's (#229)
+	limitRanges map[string][]corev1.LimitRangeItem // by namespace; live reports only
 }
 
 // newPricer is the one client a process shares (nil without --cloud-prices): its in-memory region cache lives as long as it does.
@@ -214,16 +321,116 @@ func newPricer(cloud bool) pricer {
 	return c
 }
 
+// asCSV, asMD, topN and shareIdle are --csv, --markdown, --top and --share-idle; package variables so the private build's --db path (FromDB) honours them without a new parameter.
+var (
+	asCSV, asMD, shareIdle bool
+	topN                   int
+)
+
+// checkFlags rejects flags that cannot be used together; noRecs means --security or --api, which print no recommendations.
+func checkFlags(asJSON, noRecs bool) error {
+	switch {
+	case asJSON && asCSV || asJSON && asMD || asCSV && asMD:
+		return errors.New("use only one of --json, --csv and --markdown")
+	case topN < 0:
+		return errors.New("--top must not be negative")
+	case shareIdle && (asCSV || asMD || noRecs):
+		return errors.New("--share-idle works only with the tables and --json")
+	case len(onlyNS) > 0 && len(skipNS) > 0:
+		return errors.New("use only one of --namespace and --exclude-namespace")
+	case (asJSON || noRecs) && (len(onlyNS) > 0 || len(skipNS) > 0 || topN > 0), noRecs && asMD:
+		return errors.New("--namespace, --exclude-namespace, --top and --markdown do not work with --json, --security or --api")
+	}
+	return nil
+}
+
+// top keeps the first topN recommendations: report.Build sorts them by saving, largest first.
+func top(recs []report.Rec) []report.Rec {
+	if topN > 0 && topN < len(recs) {
+		return recs[:topN]
+	}
+	return recs
+}
+
+// onlyNS is --namespace and skipNS --exclude-namespace; both empty show every namespace. The figures are computed on the whole cluster first, so a namespace costs the same with or without them.
+var onlyNS, skipNS []string
+
+func parseList(what, v string) ([]string, error) {
+	var l []string
+	for _, n := range strings.Split(v, ",") {
+		if n = strings.TrimSpace(n); n == "" {
+			return nil, fmt.Errorf("empty %s name", what)
+		}
+		l = append(l, n)
+	}
+	return l, nil
+}
+
+// filterNamespaces keeps the rows of the namespaces in only, or drops those in skip. One without running pods is an error, and so is dropping them all: neither must read as "nothing to save".
+func filterNamespaces(r *report.Report, only, skip []string) error {
+	if len(only)+len(skip) == 0 {
+		return nil
+	}
+	for _, n := range slices.Concat(only, skip) {
+		if !slices.ContainsFunc(r.Namespaces, func(l report.Line) bool { return l.Namespace == n }) {
+			return fmt.Errorf("namespace %q has no pods in this report", n)
+		}
+	}
+	out := func(ns string) bool { return len(only) > 0 && !slices.Contains(only, ns) || slices.Contains(skip, ns) }
+	other := func(l report.Line) bool { return out(l.Namespace) }
+	r.Namespaces = slices.DeleteFunc(r.Namespaces, other)
+	if len(r.Namespaces) == 0 {
+		return errors.New("--exclude-namespace leaves out every namespace")
+	}
+	r.Workloads = slices.DeleteFunc(r.Workloads, other)
+	r.Recs = slices.DeleteFunc(r.Recs, func(x report.Rec) bool { return out(x.Namespace) })
+	r.Risks = slices.DeleteFunc(r.Risks, func(x report.Risk) bool { return out(x.Namespace) })
+	return nil
+}
+
 func output(ctx context.Context, out io.Writer, s snapshot, prices report.Prices, pr pricer, asJSON bool, now time.Time) error {
 	e := assemble(ctx, s, prices, pr, os.Stderr, now)
+	if shareIdle {
+		e.ShareIdle()
+	}
 	if asJSON {
 		return writeJSON(out, e)
 	}
+	if err := filterNamespaces(&e.Report, onlyNS, skipNS); err != nil {
+		return err
+	}
+	if asCSV || asMD {
+		recs, body := top(e.Recs), report.CSV
+		if asMD {
+			body = report.Markdown
+		}
+		if n := len(e.Recs) - len(recs); n > 0 { // on stderr, so stdout stays only the rows
+			fmt.Fprintf(os.Stderr, "phrontis: %d more recommendation(s) with a smaller saving not shown (--top %d)\n", n, topN)
+		}
+		_, err := out.Write(body(recs))
+		return err
+	}
 	render(out, e.Report, prices, e.NodePrices, s.samples, s.window, s.windowed)
+	if len(e.PricesAdjusted) > 0 {
+		fmt.Fprintf(out, "prices   adjusted (%s): the figures above are estimates, not an invoice\n", strings.Join(e.PricesAdjusted, ", "))
+	}
+	renderRisks(out, e.Risks)
+	if names, what := onlyNS, "only"; len(onlyNS)+len(skipNS) > 0 {
+		if len(skipNS) > 0 {
+			names, what = skipNS, "without"
+		}
+		fmt.Fprintf(out, "\n%s namespaces %s; the cluster line covers the whole cluster, and the storage, load balancer, spot, node, eviction and abandoned-workload checks are left out\n",
+			what, strings.Join(names, ", "))
+		return nil
+	}
 	renderStorage(out, e.Storage)
 	renderLoadBalancers(out, e.LoadBalancers)
+	renderNetwork(out, e.Network, s.window.String())
 	renderSpot(out, e.Spot)
 	renderKarpenter(out, e.NodePool)
+	renderConsolidation(out, e.Consolidation)
+	renderUnevictable(out, e.Unevictable)
+	renderAbandoned(out, e.Abandoned)
 	return nil
 }
 
@@ -233,7 +440,10 @@ func assemble(ctx context.Context, s snapshot, prices report.Prices, pr pricer, 
 	warn = io.MultiWriter(warn, &seen)
 	np := priceNodes(ctx, pr, s.nodes, s.keys, prices, warn)
 	r := report.Build(s.nodes, s.pods, prices)
+	r.Risks = report.Risks(s.pods, s.hpas)
 	report.MarkHPA(r.Recs, s.hpas)
+	report.MarkLimitRanges(r.Recs, s.limitRanges)
+	report.ExplainAll(r.Recs, s.windowed, s.window)
 	listed, unlisted := map[string]bool{}, 0
 	for _, n := range s.nodes {
 		listed[n.Name] = true
@@ -261,24 +471,40 @@ func assemble(ctx context.Context, s snapshot, prices report.Prices, pr pricer, 
 	if seen.Len() > 0 {
 		warnings = strings.Split(strings.TrimSpace(seen.String()), "\n")
 	}
-	return export{r, s.kctx, prices, np, s.samples, s.window.String(), basis(s.windowed), at, st, lb, kp, warnings, buildSpot(ctx, pr, s, r)}
+	e := export{r, s.kctx, prices, np, s.samples, s.window.String(), basis(s.windowed), at, st, lb, kp, warnings, buildSpot(ctx, pr, s, r), report.BuildSecurity(s.pods), nil, nil, nil, nil, nil}
+	if prom != nil { // spec 040: only a live --prometheus report; prom is nil in every other mode
+		e.Network = buildNetwork(ctx, *prom, pr, s.keys, s.pods, warn)
+	}
+	e.Consolidation = report.BuildConsolidation(flatPriced(s.nodes, prices), s.pods, s.pdbs)
+	e.Unevictable = report.BuildUnevictable(flatPriced(s.nodes, prices), s.pods, s.pdbs)
+	e.Abandoned = report.BuildAbandoned(s.pods, r.Workloads) // nil unless pods carry a Window's CPU stats
+	if a, ok := pr.(*adjusted); ok {
+		e.PricesAdjusted = a.labels()
+	}
+	return e
 }
 
 // export is the --json document; its field names are the contract web/src/report.ts reads.
 type export struct {
 	report.Report
-	Context       string
-	Prices        report.Prices // the flat rates; nodes listed in NodePrices with another Source were priced individually
-	NodePrices    []NodePrice
-	Samples       int
-	Window        string
-	Basis         string // what usage means: "peak" or "p95 CPU, peak memory"
-	At            time.Time
-	Storage       report.Storage       // PersistentVolumes by namespace, billed per GiB; separate from the compute figures above
-	LoadBalancers report.LoadBalancers // hourly charge only; separate from the compute figures above
-	NodePool      *karpenter           `json:",omitempty"` // simulated Karpenter NodePool; absent without a single AWS region's prices
-	Warnings      []string             `json:",omitempty"` // why prices fell back to "flat" (lookup failed or timed out); absent when none did
-	Spot          *spotReport          `json:",omitempty"` // which workloads can run on spot and what it saves; absent when there are no workloads
+	Context        string
+	Prices         report.Prices // the flat rates; nodes listed in NodePrices with another Source were priced individually
+	NodePrices     []NodePrice
+	Samples        int
+	Window         string
+	Basis          string // what usage means: "peak" or "p95 CPU, peak memory"
+	At             time.Time
+	Storage        report.Storage        // PersistentVolumes by namespace, billed per GiB; separate from the compute figures above
+	LoadBalancers  report.LoadBalancers  // hourly charge only; separate from the compute figures above
+	NodePool       *karpenter            `json:",omitempty"` // simulated Karpenter NodePool; absent without a single AWS region's prices
+	Warnings       []string              `json:",omitempty"` // why prices fell back to "flat" (lookup failed or timed out); absent when none did
+	Spot           *spotReport           `json:",omitempty"` // which workloads can run on spot and what it saves; absent when there are no workloads
+	Security       report.SecurityReport // configuration checks, not a vulnerability scan (spec 023)
+	Consolidation  *report.Consolidation `json:",omitempty"` // S29: nodes that could be emptied; absent with fewer than 2 nodes
+	Abandoned      *report.Abandoned     `json:",omitempty"` // S27: idle workloads; absent without a usage window or when none is idle
+	PricesAdjusted []string              `json:",omitempty"` // S23: the org's discounts that changed node prices, e.g. "aws -10%"; absent when none applied
+	Unevictable    *report.Unevictable   `json:",omitempty"` // S26: pods that block consolidation; absent when none do
+	Network        []networkEgress       `json:",omitempty"` // spec 040: outbound traffic per namespace, an upper bound, in no total; absent without --prometheus or on a non-AWS cluster
 }
 
 // karpenter is the simulation plus the NodePool manifest built from it (built once, shown by both the CLI and the dashboard).
@@ -297,6 +523,7 @@ type pricer interface {
 	Hourly(ctx context.Context, k pricing.Key) (float64, string, error)
 	EBSMonthly(ctx context.Context, region, volType string) (float64, error)
 	ELBHourly(ctx context.Context, region string) (map[string]float64, error)
+	DataTransferOut(ctx context.Context, region string) (float64, error)
 	EC2Types(ctx context.Context, region string) (map[string]pricing.Type, error)
 }
 
@@ -495,7 +722,9 @@ func collect(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface,
 			break
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "phrontis: no usage metrics (is metrics-server installed?): %v\n  costing by requests only, no rightsizing\n", err)
+			if prom == nil { // with --prometheus the usage comes from Prometheus: no metrics-server is fine
+				fmt.Fprintf(os.Stderr, "phrontis: no usage metrics (is metrics-server installed?): %v\n  costing by requests only, no rightsizing\n", err)
+			}
 			break
 		}
 		samples++
@@ -517,7 +746,7 @@ func collect(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface,
 			keys[n.Name] = k
 		}
 		nodes = append(nodes, report.Node{Name: n.Name, Capacity: report.Resources{
-			MilliCPU: n.Status.Capacity.Cpu().MilliValue(), MemBytes: n.Status.Capacity.Memory().Value()}})
+			MilliCPU: n.Status.Capacity.Cpu().MilliValue(), MemBytes: n.Status.Capacity.Memory().Value()}, Unschedulable: n.Spec.Unschedulable})
 	}
 	var pods []report.Pod
 	var podLabels []map[string]string // parallel to podList, to resolve PDB selectors
@@ -526,9 +755,9 @@ func collect(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface,
 			continue
 		}
 		wl, static := workload(&p, owners)
-		rp := report.Pod{Namespace: p.Namespace, Name: p.Name, Workload: wl, Node: p.Spec.NodeName, Static: static}
+		rp := report.Pod{Namespace: p.Namespace, Name: p.Name, Workload: wl, Node: p.Spec.NodeName, Static: static, Labels: report.KeepLabels(p.Labels)}
 		oom := map[string]bool{}
-		for _, s := range p.Status.ContainerStatuses {
+		for _, s := range slices.Concat(p.Status.InitContainerStatuses, p.Status.ContainerStatuses) {
 			for _, t := range []*corev1.ContainerStateTerminated{s.State.Terminated, s.LastTerminationState.Terminated} {
 				oom[s.Name] = oom[s.Name] || t != nil && t.Reason == "OOMKilled"
 			}
@@ -537,14 +766,24 @@ func collect(ctx context.Context, cs kubernetes.Interface, mc metrics.Interface,
 		if c := metav1.GetControllerOf(&p); c != nil {
 			manifest = memLim[p.Namespace+"/"+c.Kind+"/"+c.Name]
 		}
-		for _, c := range p.Spec.Containers {
+		rp.HostNetwork, rp.HostPID, rp.HostIPC = p.Spec.HostNetwork, p.Spec.HostPID, p.Spec.HostIPC
+		rp.EvictRead, rp.NoEvict, rp.SafeEvict = true, p.Annotations[report.NoEvictAnnotation] == "false", p.Annotations[report.NoEvictAnnotation] == "true"
+		for i, c := range slices.Concat(p.Spec.Containers, sidecars(p.Spec)) {
 			u, ok := usage[p.Namespace+"/"+p.Name+"/"+c.Name]
 			rp.Containers = append(rp.Containers, report.Container{Name: c.Name, Usage: u, HasUsage: ok, OOMKilled: oom[c.Name],
 				Request:          report.Resources{MilliCPU: c.Resources.Requests.Cpu().MilliValue(), MemBytes: c.Resources.Requests.Memory().Value()},
 				Limit:            report.Resources{MilliCPU: c.Resources.Limits.Cpu().MilliValue(), MemBytes: c.Resources.Limits.Memory().Value()},
 				ManifestMemLimit: manifest[c.Name]})
+			rc := &rp.Containers[len(rp.Containers)-1]
+			if rc.Sidecar = i >= len(p.Spec.Containers); rc.Sidecar && manifest != nil {
+				_, ok := manifest[c.Name]
+				rc.Injected = !ok
+			}
+			posture(rc, p.Spec.SecurityContext, c)
 		}
 		for _, v := range p.Spec.Volumes {
+			rp.HostPath = rp.HostPath || v.HostPath != nil
+			rp.EmptyDir = rp.EmptyDir || v.EmptyDir != nil
 			if v.PersistentVolumeClaim != nil {
 				rp.PVCs = append(rp.PVCs, v.PersistentVolumeClaim.ClaimName)
 			}
@@ -583,7 +822,7 @@ func budgets(ctx context.Context, cs kubernetes.Interface, pods []report.Pod, la
 		if err != nil {
 			continue // an invalid selector protects nothing
 		}
-		pdb := report.PDB{Namespace: b.Namespace, Name: b.Name}
+		pdb := report.PDB{Namespace: b.Namespace, Name: b.Name, Strict: b.Status.ExpectedPods > 0 && b.Status.DisruptionsAllowed == 0}
 		for i, p := range pods {
 			if p.Namespace == b.Namespace && sel.Matches(k8slabels.Set(labels[i])) && !slices.Contains(pdb.Workloads, p.Workload) {
 				pdb.Workloads = append(pdb.Workloads, p.Workload)
@@ -594,6 +833,21 @@ func budgets(ctx context.Context, cs kubernetes.Interface, pods []report.Pod, la
 		}
 	}
 	return out, nil
+}
+
+// listLimitRanges reads each namespace's LimitRange items so a recommendation can say that its size would be rejected.
+// Forbidden (an older ClusterRole) or any other failure only drops the notes, with one warning.
+func listLimitRanges(ctx context.Context, cs kubernetes.Interface, warn io.Writer) map[string][]corev1.LimitRangeItem {
+	list, err := cs.CoreV1().LimitRanges("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Fprintf(warn, "phrontis: cannot list LimitRanges (%v); recommendations are not checked against them\n", err)
+		return nil
+	}
+	out := map[string][]corev1.LimitRangeItem{}
+	for _, l := range list.Items {
+		out[l.Namespace] = append(out[l.Namespace], l.Spec.Limits...)
+	}
+	return out
 }
 
 // listHPAs reads the HorizontalPodAutoscalers so recommendations can say which workloads an HPA scales.
@@ -618,10 +872,42 @@ func listHPAs(ctx context.Context, cs kubernetes.Interface, warn io.Writer) []re
 			if (n == corev1.ResourceCPU || n == corev1.ResourceMemory) && !slices.Contains(a.Resources, string(n)) {
 				a.Resources = append(a.Resources, string(n))
 			}
+			if u := utilization(m); u > 0 {
+				c := ""
+				if m.ContainerResource != nil {
+					c = m.ContainerResource.Container
+				}
+				// A ContainerResource target is the more specific one: it wins over a pod-wide Resource target.
+				if n == corev1.ResourceCPU && (c != "" || a.CPUContainer == "") {
+					a.CPUTarget, a.CPUContainer = u, c
+				} else if n == corev1.ResourceMemory && (c != "" || a.MemContainer == "") {
+					a.MemTarget, a.MemContainer = u, c
+				}
+			}
 		}
+		a.MinReplicas = 1 // the API default
+		if h.Spec.MinReplicas != nil {
+			a.MinReplicas = int(*h.Spec.MinReplicas)
+		}
+		a.Replicas, a.MaxReplicas = int(h.Status.CurrentReplicas), int(h.Spec.MaxReplicas)
 		out = append(out, a)
 	}
 	return out
+}
+
+// utilization is the averageUtilization percent of a Resource or ContainerResource metric; 0 for an averageValue target.
+func utilization(m autoscalingv2.MetricSpec) int {
+	var t autoscalingv2.MetricTarget
+	switch {
+	case m.Resource != nil:
+		t = m.Resource.Target
+	case m.ContainerResource != nil:
+		t = m.ContainerResource.Target
+	}
+	if t.AverageUtilization == nil {
+		return 0
+	}
+	return int(*t.AverageUtilization)
 }
 
 const ebsDriver = "ebs.csi.aws.com"
@@ -643,7 +929,7 @@ func volumes(ctx context.Context, cs kubernetes.Interface) ([]report.Volume, err
 	}
 	var out []report.Volume
 	for _, pv := range pvs.Items {
-		v := report.Volume{Name: pv.Name, Bytes: pv.Spec.Capacity.Storage().Value()}
+		v := report.Volume{Name: pv.Name, Bytes: pv.Spec.Capacity.Storage().Value(), Class: pv.Spec.StorageClassName, Created: pv.CreationTimestamp.Time}
 		if c := pv.Spec.ClaimRef; c != nil && pv.Status.Phase == corev1.VolumeBound {
 			v.Namespace, v.Claim = c.Namespace, c.Name
 		}
@@ -693,6 +979,16 @@ func lbKind(s corev1.Service) string {
 	return "unknown"
 }
 
+// sidecars are the native sidecars of s: init containers that run as long as the pod (spec 031).
+func sidecars(s corev1.PodSpec) (out []corev1.Container) {
+	for _, c := range s.InitContainers {
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // ownerIndex maps "ns/ReplicaSet/x" and "ns/Job/x" to their controller, so pods roll up to a Deployment or CronJob.
 // memLim maps "ns/Kind/x" of each ReplicaSet, StatefulSet and DaemonSet to its template's memory limit per container: the
 // manifest's, which the webhook may have raised in the pod but caps memory by (report.MemCap). A container the template
@@ -715,7 +1011,7 @@ func ownerIndex(ctx context.Context, cs kubernetes.Interface) (idx map[string]st
 	tmpl := func(ns, kind, name string, t corev1.PodTemplateSpec) {
 		k := ns + "/" + kind + "/" + name
 		memLim[k] = map[string]int64{}
-		for _, c := range t.Spec.Containers {
+		for _, c := range slices.Concat(t.Spec.Containers, sidecars(t.Spec)) {
 			memLim[k][c.Name] = cmp.Or(c.Resources.Limits.Memory().Value(), def[ns])
 		}
 	}
@@ -800,19 +1096,26 @@ func render(out io.Writer, r report.Report, p report.Prices, np []NodePrice, sam
 	if window < 24*time.Hour {
 		fmt.Fprint(out, "; size on days of data, not minutes")
 	}
-	fmt.Fprint(out, "\n\n")
+	fmt.Fprint(out, "\n")
+	idleHead, idleCols := "", func(report.Line) string { return "" }
+	if shareIdle {
+		fmt.Fprintf(out, "idle     shared per node by cost; %.2f of nodes with no charged pods is in no row\n", r.IdleUnshared)
+		idleHead = "\tIDLE SHARE\tWITH IDLE"
+		idleCols = func(l report.Line) string { return fmt.Sprintf("\t%.2f\t%.2f", l.IdleShare, l.Monthly+l.IdleShare) }
+	}
+	fmt.Fprintln(out)
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAMESPACE\tPODS\tCOST/MONTH")
+	fmt.Fprintln(w, "NAMESPACE\tPODS\tCOST/MONTH"+idleHead+"\tCPU USED/REQ\tMEM USED/REQ")
 	for _, l := range r.Namespaces {
-		fmt.Fprintf(w, "%s\t%d\t%.2f\n", l.Namespace, l.Pods, l.Monthly)
+		fmt.Fprintf(w, "%s\t%d\t%.2f%s\t%s\t%s\n", l.Namespace, l.Pods, l.Monthly, idleCols(l), percent(l.CPUPct), percent(l.MemPct))
 	}
 	w.Flush()
 	fmt.Fprintln(out)
 	w = tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "WORKLOAD\tNAMESPACE\tPODS\tCOST/MONTH")
+	fmt.Fprintln(w, "WORKLOAD\tNAMESPACE\tPODS\tCOST/MONTH"+idleHead+"\tCPU USED/REQ\tMEM USED/REQ")
 	for _, l := range r.Workloads {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%.2f\n", l.Workload, l.Namespace, l.Pods, l.Monthly)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%.2f%s\t%s\t%s\n", l.Workload, l.Namespace, l.Pods, l.Monthly, idleCols(l), percent(l.CPUPct), percent(l.MemPct))
 	}
 	w.Flush()
 
@@ -830,16 +1133,54 @@ func render(out io.Writer, r report.Report, p report.Prices, np []NodePrice, sam
 	fmt.Fprintln(w, "WORKLOAD\tNAMESPACE\tCONTAINER\tPODS\tCPU REQ → REC\tMEM REQ → REC\tSAVING/MONTH\tNOTE")
 	for _, x := range r.Recs {
 		total += x.MonthlySaving
+	}
+	shown := top(r.Recs)
+	for _, x := range shown {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s → %s\t%s → %s\t%.2f\t%s\n", x.Workload, x.Namespace, x.Container, x.Pods,
 			milli(x.Request.MilliCPU), milli(x.Recommended.MilliCPU), mebi(x.Request.MemBytes), mebi(x.Recommended.MemBytes), x.MonthlySaving, note(x))
 	}
 	w.Flush()
-	fmt.Fprintf(out, "net saving %.2f/month; it reaches the bill only once nodes scale down to fit\n", total)
+	fmt.Fprintln(out, "\nWHY")
+	for _, x := range shown {
+		fmt.Fprintf(out, "%s/%s/%s: %s\n", x.Namespace, x.Workload, x.Container, x.Explanation)
+	}
+	if n := len(r.Recs) - len(shown); n > 0 {
+		fmt.Fprintf(out, "\n%d more recommendation(s) with a smaller saving not shown (--top %d); the net saving below covers them too\n", n, topN)
+	}
+	fmt.Fprintf(out, "\nnet saving %.2f/month; it reaches the bill only once nodes scale down to fit\n", total)
+}
+
+// renderRisks prints the workloads at risk; nothing when there are none.
+func renderRisks(out io.Writer, risks []report.Risk) {
+	if len(risks) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\nAT RISK (%d)\n", len(risks))
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "WORKLOAD\tNAMESPACE\tCONTAINER\tREASON")
+	for _, x := range risks {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", x.Workload, x.Namespace, cmp.Or(x.Container, "-"), x.Detail)
+	}
+	w.Flush()
+}
+
+// percent prints a share of the request; "-" when nothing measured has one.
+func percent(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", *p)
 }
 
 // note says why a rec is unusual and which limit must rise with it (a request above its limit is rejected).
 func note(x report.Rec) string {
 	var n []string
+	switch {
+	case x.Injected:
+		n = append(n, "sidecar, not in the manifest")
+	case x.Sidecar:
+		n = append(n, "sidecar")
+	}
 	if x.OOMKilled {
 		n = append(n, "OOM-killed")
 	}
@@ -853,7 +1194,15 @@ func note(x report.Rec) string {
 		n = append(n, "mem limit "+mebi(x.Limit.MemBytes)+" → "+mebi(x.Recommended.MemBytes))
 	}
 	if h := x.HPA; h != nil {
-		n = append(n, "HPA: "+h.Name+hpaRes(h))
+		if len(h.Advice) == 0 {
+			n = append(n, "HPA: "+h.Name+hpaRes(h))
+		}
+		for _, a := range h.Advice { // the advice names the HPA itself
+			n = append(n, a.Text(h.Name))
+		}
+	}
+	if x.LimitRange {
+		n = append(n, "the namespace's LimitRange rejects this size")
 	}
 	return strings.Join(n, "; ")
 }
