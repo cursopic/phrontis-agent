@@ -40,11 +40,11 @@ func demoSnapshot() snapshot {
 	res := func(milli, mem int64) report.Resources { return report.Resources{MilliCPU: milli, MemBytes: mem} }
 	type c = report.Container
 	pod := func(ns, name, wl, node string, cs ...c) report.Pod {
-		return report.Pod{Namespace: ns, Name: name, Workload: wl, Node: node, Containers: cs}
+		return report.Pod{Namespace: ns, Name: name, Workload: wl, Node: node, Containers: cs, EvictRead: true}
 	}
 	api := c{Name: "api", Request: res(1000, 2*gi), Usage: res(180, 600*mi), HasUsage: true}
-	web := c{Name: "nginx", Request: res(500, 512*mi), Usage: res(60, 120*mi), HasUsage: true}
-	worker := c{Name: "worker", Request: res(250, 256*mi), Limit: res(300, 384*mi), Usage: res(290, 380*mi), HasUsage: true, OOMKilled: true}
+	web := c{Name: "nginx", Request: res(500, 512*mi), Usage: res(60, 120*mi), HasUsage: true, Image: "nginx"}
+	worker := c{Name: "worker", Request: res(250, 256*mi), Limit: res(300, 384*mi), Usage: res(290, 380*mi), HasUsage: true, OOMKilled: true, Image: "registry.example.com/payments/worker@sha256:4f1c", Privileged: true, RunAsNonRoot: true}
 	dns := c{Name: "coredns", Request: res(100, 70*mi), Usage: res(4, 25*mi), HasUsage: true}
 	pods := []report.Pod{
 		pod("checkout", "api-7d9f-a", "Deployment/api", "node-a", api),
@@ -67,8 +67,37 @@ func demoSnapshot() snapshot {
 	for _, n := range names {
 		pods = append(pods, pod("kube-system", "kube-proxy-"+n, "DaemonSet/kube-proxy", n, c{Name: "kube-proxy", Request: res(100, 64*mi), Usage: res(5, 30*mi), HasUsage: true}))
 	}
+	for i := range pods { // S26: the reasons the Unevictable block shows
+		switch pods[i].Name {
+		case "nightly-etl-29170":
+			pods[i].EmptyDir = true
+		case "grafana-84b7":
+			pods[i].NoEvict = true
+		}
+	}
+	for i := range pods { // every container carries its posture fields, as a current agent sends them
+		for j := range pods[i].Containers {
+			if k := &pods[i].Containers[j]; k.Image == "" {
+				k.Image, k.RunAsNonRoot = "registry.example.com/"+pods[i].Namespace+"/"+k.Name+":1.0", true
+			}
+		}
+	}
+	teams := map[string]string{"checkout": "storefront", "payments": "payments", "data": "data"} // monitoring and kube-system carry no team: the unlabeled bucket
+	for i := range pods {
+		pods[i].Labels = map[string]string{}
+		if t, ok := teams[pods[i].Namespace]; ok {
+			pods[i].Labels["team"] = t
+		}
+		if pods[i].Namespace != "kube-system" {
+			pods[i].Labels["app"] = pods[i].Workload[strings.Index(pods[i].Workload, "/")+1:]
+		}
+	}
 	vol := func(name, ns, claim string, gib int64, typ string) report.Volume {
-		return report.Volume{Name: name, Namespace: ns, Claim: claim, Bytes: gib * gi, Type: typ}
+		return report.Volume{Name: name, Namespace: ns, Claim: claim, Bytes: gib * gi, Type: typ, Class: "gp3"}
+	}
+	old := func(v report.Volume, y int, m time.Month, d int) report.Volume {
+		v.Created = time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+		return v
 	}
 	vols := []report.Volume{
 		vol("pv-ledger", "payments", "data-ledger-db-0", 200, "gp3"),
@@ -76,12 +105,12 @@ func demoSnapshot() snapshot {
 		vol("pv-etl", "data", "etl-scratch", 200, "gp3"),
 		vol("pv-prom", "monitoring", "data-prometheus-0", 100, "gp3"),
 		vol("pv-uploads", "checkout", "uploads", 50, "gp3"),
-		vol("pv-old-1", "", "", 200, "gp3"), // Released: billed, used by nobody
-		vol("pv-old-2", "", "", 100, "gp3"),
+		old(vol("pv-old-1", "", "", 200, "gp3"), 2026, 9, 3), // Released: billed, used by nobody
+		old(vol("pv-old-2", "", "", 100, "gp3"), 2026, 10, 21),
 	}
 	lbs := []report.LoadBalancer{{Name: "web", Namespace: "checkout", Kind: "classic"}, {Name: "api", Namespace: "checkout", Kind: "nlb"}, {Name: "grafana", Namespace: "monitoring", Kind: "unknown"}}
 	pdbs := []report.PDB{{Namespace: "checkout", Name: "api", Workloads: []string{"Deployment/api"}}, {Namespace: "checkout", Name: "web", Workloads: []string{"Deployment/web"}},
-		{Namespace: "kube-system", Name: "coredns", Workloads: []string{"Deployment/coredns"}}} // worker has two pods but no PDB: it stays on-demand
+		{Namespace: "kube-system", Name: "coredns", Workloads: []string{"Deployment/coredns"}, Strict: true}} // worker has two pods but no PDB: it stays on-demand
 	return snapshot{kctx: "sample", nodes: nodes, pods: pods, keys: keys, volumes: vols, lbs: lbs, samples: 1, pdbs: pdbs}
 }
 

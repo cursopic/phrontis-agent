@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 
 	"github.com/cursopic/phrontis/internal/pricing"
 	"github.com/cursopic/phrontis/internal/report"
@@ -86,4 +88,56 @@ func renderSpot(out io.Writer, s *spotReport) {
 			fmt.Fprintf(out, "  %s/%s  %.2f/month now\n", l.Namespace, l.Workload, l.Monthly)
 		}
 	}
+}
+
+// flatPriced is nodes with the flat prices on those nodes that have none of their own, as report.Build prices them.
+func flatPriced(nodes []report.Node, flat report.Prices) []report.Node {
+	out := slices.Clone(nodes)
+	for i := range out {
+		if out[i].Prices == (report.Prices{}) {
+			out[i].Prices = flat
+		}
+	}
+	return out
+}
+
+func renderConsolidation(out io.Writer, c *report.Consolidation) {
+	if c == nil {
+		return
+	}
+	fmt.Fprintf(out, "\nCONSOLIDATION (nothing is moved)\n")
+	if c.Count == 0 {
+		fmt.Fprintln(out, "no node can be emptied")
+	} else {
+		fmt.Fprintf(out, "%d can be emptied, saving about %.2f/month\n", c.Count, c.Saving)
+	}
+	for _, v := range c.Verdicts {
+		fmt.Fprintf(out, "  %s  cpu %.0f%% mem %.0f%%  %.2f/month  ", v.Node, 100*v.CPU, 100*v.Mem, v.Monthly)
+		if v.Empty && len(v.To) == 0 {
+			fmt.Fprintln(out, "runs no pods to move")
+		} else if v.Empty {
+			fmt.Fprintf(out, "pods go to %s\n", strings.Join(v.To, ", "))
+		} else {
+			fmt.Fprintf(out, "stays: %s\n", v.Reason)
+		}
+	}
+	if c.OldAgent {
+		fmt.Fprintln(out, "agent too old to read eviction annotations")
+	}
+	fmt.Fprintln(out, "Estimate. Ignores affinity, taints and node selectors.")
+}
+
+func renderAbandoned(out io.Writer, a *report.Abandoned) {
+	if a == nil {
+		return
+	}
+	fmt.Fprintf(out, "\nABANDONED WORKLOADS (CPU stayed near zero over each workload's own samples, at least 1 day; nothing is changed)\n")
+	fmt.Fprintf(out, "%d workloads, %.2f/month\n", len(a.Workloads), a.Monthly)
+	if a.Short {
+		fmt.Fprintf(out, "some history is shorter than %d days: judged on what exists\n", report.AbandonedDays)
+	}
+	for _, l := range a.Workloads {
+		fmt.Fprintf(out, "  %s  %s  %d pod(s)  peak %dm  %.1f days  %.2f/month\n", l.Namespace, l.Workload, l.Pods, l.PeakCPU, l.SpanHours/24, l.Monthly)
+	}
+	fmt.Fprintln(out, "CPU only: the agent sees no traffic. Check before removing.")
 }

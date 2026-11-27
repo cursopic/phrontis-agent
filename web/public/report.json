@@ -11,31 +11,41 @@
       "Namespace": "checkout",
       "Workload": "",
       "Pods": 5,
-      "Monthly": 135.04999999999998
+      "Monthly": 135.04999999999998,
+      "CPUPct": 16.5,
+      "MemPct": 28.459821428571427
     },
     {
       "Namespace": "payments",
       "Workload": "",
       "Pods": 3,
-      "Monthly": 81.548984375
+      "Monthly": 81.548984375,
+      "CPUPct": 94,
+      "MemPct": 96.03365384615384
     },
     {
       "Namespace": "data",
       "Workload": "",
       "Pods": 2,
-      "Monthly": 71.175
+      "Monthly": 71.175,
+      "CPUPct": 96.66666666666667,
+      "MemPct": 66.74107142857143
     },
     {
       "Namespace": "monitoring",
       "Workload": "",
       "Pods": 2,
-      "Monthly": 43.8
+      "Monthly": 43.8,
+      "CPUPct": 42,
+      "MemPct": 66.18923611111111
     },
     {
       "Namespace": "kube-system",
       "Workload": "",
       "Pods": 9,
-      "Monthly": 26.861718749999998
+      "Monthly": 26.861718749999998,
+      "CPUPct": 7.555555555555555,
+      "MemPct": 49.67948717948718
     }
   ],
   "Workloads": [
@@ -43,67 +53,89 @@
       "Namespace": "checkout",
       "Workload": "Deployment/api",
       "Pods": 3,
-      "Monthly": 104.02499999999999
+      "Monthly": 104.02499999999999,
+      "CPUPct": 18,
+      "MemPct": 29.296875
     },
     {
       "Namespace": "payments",
       "Workload": "StatefulSet/ledger-db",
       "Pods": 1,
-      "Monthly": 62.9625
+      "Monthly": 62.9625,
+      "CPUPct": 86.66666666666667,
+      "MemPct": 91.66666666666667
     },
     {
       "Namespace": "data",
       "Workload": "Deployment/kafka-connect",
       "Pods": 1,
-      "Monthly": 36.5
+      "Monthly": 36.5,
+      "CPUPct": 18.75,
+      "MemPct": 29.296875
     },
     {
       "Namespace": "monitoring",
       "Workload": "StatefulSet/prometheus",
       "Pods": 1,
-      "Monthly": 36.5
+      "Monthly": 36.5,
+      "CPUPct": 50,
+      "MemPct": 70.80078125
     },
     {
       "Namespace": "data",
       "Workload": "CronJob/nightly-etl",
       "Pods": 1,
-      "Monthly": 34.675
+      "Monthly": 34.675,
+      "CPUPct": 185.71428571428572,
+      "MemPct": 116.66666666666667
     },
     {
       "Namespace": "checkout",
       "Workload": "Deployment/web",
       "Pods": 2,
-      "Monthly": 31.025
+      "Monthly": 31.025,
+      "CPUPct": 12,
+      "MemPct": 23.4375
     },
     {
       "Namespace": "payments",
       "Workload": "Deployment/worker",
       "Pods": 2,
-      "Monthly": 18.586484374999998
+      "Monthly": 18.586484374999998,
+      "CPUPct": 116,
+      "MemPct": 148.4375
     },
     {
       "Namespace": "kube-system",
       "Workload": "DaemonSet/kube-proxy",
       "Pods": 6,
-      "Monthly": 17.79375
+      "Monthly": 17.79375,
+      "CPUPct": 5,
+      "MemPct": 46.875
     },
     {
       "Namespace": "monitoring",
       "Workload": "Deployment/grafana",
       "Pods": 1,
-      "Monthly": 7.3
+      "Monthly": 7.3,
+      "CPUPct": 10,
+      "MemPct": 29.296875
     },
     {
       "Namespace": "kube-system",
       "Workload": "Deployment/coredns",
       "Pods": 2,
-      "Monthly": 5.9740234375000005
+      "Monthly": 5.9740234375000005,
+      "CPUPct": 4,
+      "MemPct": 35.714285714285715
     },
     {
       "Namespace": "kube-system",
       "Workload": "Pod/etcd-node-a",
       "Pods": 1,
-      "Monthly": 3.0939453125
+      "Monthly": 3.0939453125,
+      "CPUPct": 30,
+      "MemPct": 80
     }
   ],
   "Recs": [
@@ -126,7 +158,12 @@
       },
       "MonthlySaving": 77.94517968749999,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "api-7d9f-a",
+      "CPUUsage": 180,
+      "MemUsage": 629145600,
+      "MonthlyCost": 104.025
     },
     {
       "Namespace": "data",
@@ -147,7 +184,12 @@
       },
       "MonthlySaving": 26.011953125,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "kafka-connect-0",
+      "CPUUsage": 150,
+      "MemUsage": 1258291200,
+      "MonthlyCost": 36.5
     },
     {
       "Namespace": "checkout",
@@ -168,7 +210,12 @@
       },
       "MonthlySaving": 25.970890625,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "web-5c4b-a",
+      "CPUUsage": 60,
+      "MemUsage": 125829120,
+      "MonthlyCost": 31.025
     },
     {
       "Namespace": "kube-system",
@@ -187,9 +234,14 @@
         "MilliCPU": 0,
         "MemBytes": 0
       },
-      "MonthlySaving": 15.317167968749999,
+      "MonthlySaving": 15.317167968749997,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom; a value below the minimum size (10m CPU, 32Mi memory) is held at it, not sized lower.",
+      "Pod": "kube-proxy-node-a",
+      "CPUUsage": 5,
+      "MemUsage": 31457280,
+      "MonthlyCost": 17.79375
     },
     {
       "Namespace": "monitoring",
@@ -210,7 +262,12 @@
       },
       "MonthlySaving": 9.922011718749998,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "prometheus-0",
+      "CPUUsage": 400,
+      "MemUsage": 3040870400,
+      "MonthlyCost": 36.5
     },
     {
       "Namespace": "monitoring",
@@ -231,7 +288,12 @@
       },
       "MonthlySaving": 5.947931640625,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "grafana-84b7",
+      "CPUUsage": 20,
+      "MemUsage": 157286400,
+      "MonthlyCost": 7.3
     },
     {
       "Namespace": "kube-system",
@@ -250,9 +312,14 @@
         "MilliCPU": 0,
         "MemBytes": 0
       },
-      "MonthlySaving": 5.191269531250001,
+      "MonthlySaving": 5.19126953125,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom; a value below the minimum size (10m CPU, 32Mi memory) is held at it, not sized lower.",
+      "Pod": "coredns-a",
+      "CPUUsage": 4,
+      "MemUsage": 26214400,
+      "MonthlyCost": 5.9740234375
     },
     {
       "Namespace": "payments",
@@ -273,7 +340,12 @@
       },
       "MonthlySaving": -4.030968750000001,
       "OOMKilled": true,
-      "Throttled": true
+      "Throttled": true,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom; memory is held above the last OOM kill; CPU usage is within 10% of its limit, so the container is likely throttled and the limit must rise too.",
+      "Pod": "worker-6f8d-a",
+      "CPUUsage": 290,
+      "MemUsage": 398458880,
+      "MonthlyCost": 18.586484374999998
     },
     {
       "Namespace": "data",
@@ -292,9 +364,101 @@
         "MilliCPU": 0,
         "MemBytes": 0
       },
-      "MonthlySaving": -10.95285156249999,
+      "MonthlySaving": -10.952851562499994,
       "OOMKilled": false,
-      "Throttled": false
+      "Throttled": false,
+      "Explanation": "Sized on the peak CPU and memory of the live samples, plus 20% CPU and 30% memory headroom.",
+      "Pod": "nightly-etl-29170",
+      "CPUUsage": 1300,
+      "MemUsage": 3758096384,
+      "MonthlyCost": 48.3625
+    }
+  ],
+  "Labels": {
+    "app": [
+      {
+        "Value": "api",
+        "Pods": 3,
+        "Monthly": 104.02499999999999
+      },
+      {
+        "Value": "ledger-db",
+        "Pods": 1,
+        "Monthly": 62.9625
+      },
+      {
+        "Value": "kafka-connect",
+        "Pods": 1,
+        "Monthly": 36.5
+      },
+      {
+        "Value": "prometheus",
+        "Pods": 1,
+        "Monthly": 36.5
+      },
+      {
+        "Value": "nightly-etl",
+        "Pods": 1,
+        "Monthly": 34.675
+      },
+      {
+        "Value": "web",
+        "Pods": 2,
+        "Monthly": 31.025
+      },
+      {
+        "Value": "worker",
+        "Pods": 2,
+        "Monthly": 18.586484374999998
+      },
+      {
+        "Value": "grafana",
+        "Pods": 1,
+        "Monthly": 7.3
+      },
+      {
+        "Value": "",
+        "Pods": 9,
+        "Monthly": 26.861718749999998
+      }
+    ],
+    "team": [
+      {
+        "Value": "storefront",
+        "Pods": 5,
+        "Monthly": 135.04999999999998
+      },
+      {
+        "Value": "payments",
+        "Pods": 3,
+        "Monthly": 81.548984375
+      },
+      {
+        "Value": "data",
+        "Pods": 2,
+        "Monthly": 71.175
+      },
+      {
+        "Value": "",
+        "Pods": 11,
+        "Monthly": 70.66171875
+      }
+    ]
+  },
+  "Risks": [
+    {
+      "Namespace": "payments",
+      "Workload": "Deployment/worker",
+      "Container": "worker",
+      "Kind": "cpu",
+      "Detail": "CPU at its limit, likely throttled"
+    },
+    {
+      "Namespace": "payments",
+      "Workload": "Deployment/worker",
+      "Container": "worker",
+      "Kind": "oom",
+      "Detail": "OOM-killed"
     }
   ],
   "Context": "sample",
@@ -376,6 +540,22 @@
       "Monthly": 28.560000000000002,
       "Unpriced": 0
     },
+    "Unbound": [
+      {
+        "Name": "pv-old-1",
+        "Class": "gp3",
+        "GiB": 200,
+        "Created": "2026-09-03T00:00:00Z",
+        "Monthly": 19.040000000000003
+      },
+      {
+        "Name": "pv-old-2",
+        "Class": "gp3",
+        "GiB": 100,
+        "Created": "2026-10-21T00:00:00Z",
+        "Monthly": 9.520000000000001
+      }
+    ],
     "Total": {
       "Namespace": "",
       "Volumes": 7,
@@ -453,5 +633,174 @@
         "Saving": 3.8961022418478266
       }
     ]
+  },
+  "Security": {
+    "Findings": [
+      {
+        "Namespace": "payments",
+        "Workload": "Deployment/worker",
+        "Container": "worker",
+        "Check": "privileged",
+        "Level": "high",
+        "System": false
+      },
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/web",
+        "Container": "nginx",
+        "Check": "run-as-root",
+        "Level": "medium",
+        "System": false
+      },
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/web",
+        "Container": "nginx",
+        "Check": "latest-tag",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/api",
+        "Container": "api",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "checkout",
+        "Workload": "Deployment/web",
+        "Container": "nginx",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "data",
+        "Workload": "CronJob/nightly-etl",
+        "Container": "etl",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "data",
+        "Workload": "Deployment/kafka-connect",
+        "Container": "connect",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "kube-system",
+        "Workload": "DaemonSet/kube-proxy",
+        "Container": "kube-proxy",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": true
+      },
+      {
+        "Namespace": "kube-system",
+        "Workload": "Deployment/coredns",
+        "Container": "coredns",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": true
+      },
+      {
+        "Namespace": "kube-system",
+        "Workload": "Pod/etcd-node-a",
+        "Container": "etcd",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": true
+      },
+      {
+        "Namespace": "monitoring",
+        "Workload": "Deployment/grafana",
+        "Container": "grafana",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "monitoring",
+        "Workload": "StatefulSet/prometheus",
+        "Container": "prometheus",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      },
+      {
+        "Namespace": "payments",
+        "Workload": "StatefulSet/ledger-db",
+        "Container": "postgres",
+        "Check": "no-limits",
+        "Level": "low",
+        "System": false
+      }
+    ],
+    "Unread": 0
+  },
+  "Consolidation": {
+    "Verdicts": [
+      {
+        "Node": "node-e",
+        "CPU": 0.475,
+        "Mem": 0.110107421875,
+        "Monthly": 83.94999999999999,
+        "Empty": true,
+        "To": [
+          "node-a",
+          "node-d"
+        ]
+      }
+    ],
+    "Count": 1,
+    "Saving": 83.94999999999999,
+    "OldAgent": false
+  },
+  "Unevictable": {
+    "Pods": [
+      {
+        "Namespace": "data",
+        "Pod": "nightly-etl-29170",
+        "Node": "node-a",
+        "Reasons": [
+          "local storage (emptyDir)"
+        ],
+        "Monthly": 83.94999999999999
+      },
+      {
+        "Namespace": "kube-system",
+        "Pod": "coredns-a",
+        "Node": "node-d",
+        "Reasons": [
+          "PodDisruptionBudget allows 0 disruptions"
+        ],
+        "Monthly": 83.94999999999999
+      },
+      {
+        "Namespace": "kube-system",
+        "Pod": "coredns-b",
+        "Node": "node-e",
+        "Reasons": [
+          "PodDisruptionBudget allows 0 disruptions"
+        ],
+        "Monthly": 83.94999999999999
+      },
+      {
+        "Namespace": "monitoring",
+        "Pod": "grafana-84b7",
+        "Node": "node-d",
+        "Reasons": [
+          "safe-to-evict is false"
+        ],
+        "Monthly": 83.94999999999999
+      }
+    ],
+    "Nodes": 3,
+    "Monthly": 251.84999999999997
   }
 }

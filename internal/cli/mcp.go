@@ -3,11 +3,15 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/cursopic/phrontis/internal/manifest"
 	"github.com/cursopic/phrontis/internal/mcp"
 	"github.com/cursopic/phrontis/internal/report"
 )
@@ -20,7 +24,12 @@ func serveMCP(args []string) error {
 	cpuHour := fs.Float64("cpu-hour", DefaultPrices.CPUHour, "price of one vCPU for one hour")
 	gibHour := fs.Float64("gib-hour", DefaultPrices.GiBHour, "price of one GiB of memory for one hour")
 	cloud := fs.Bool("cloud-prices", true, "price nodes from AWS/Azure public list prices (USD); false = flat prices only")
+	cluster := fs.String("cluster", "", "Phrontis cluster id (Clusters page); the open_pr_link tool needs it")
+	appURL := fs.String("app-url", defaultAppURL, "dashboard address that open_pr_link links to")
 	fs.Parse(args)
+	if err := checkAppURL(*appURL); err != nil {
+		return err
+	}
 	prices := report.Prices{CPUHour: *cpuHour, GiBHour: *gibHour}
 	pr := newPricer(*cloud)
 	build := func() (export, error) {
@@ -34,13 +43,54 @@ func serveMCP(args []string) error {
 		if err != nil {
 			return export{}, err
 		}
-		return assemble(ctx, snapshot{label, nodes, pods, keys, vols, lbs, samples, 0, false, pdbs, listHPAs(ctx, cs, os.Stderr)}, prices, pr, os.Stderr, time.Now().UTC()), nil
+		return assemble(ctx, snapshot{label, nodes, pods, keys, vols, lbs, samples, 0, false, pdbs, listHPAs(ctx, cs, os.Stderr), listLimitRanges(ctx, cs, os.Stderr)}, prices, pr, os.Stderr, time.Now().UTC()), nil
 	}
-	return mcpServer(build).Serve(os.Stdin, os.Stdout)
+	return mcpServer(build, *cluster, *appURL).Serve(os.Stdin, os.Stdout)
 }
 
-// mcpServer exposes the report built by build as five read-only tools.
-func mcpServer(build func() (export, error)) *mcp.Server {
+const defaultAppURL = "https://app.phrontis.ai"
+
+// checkAppURL accepts https, or http for exactly localhost or 127.0.0.1 (port allowed), with no userinfo, path, query or fragment.
+func checkAppURL(s string) error {
+	u, err := url.Parse(s)
+	bad := fmt.Errorf("--app-url %q: use https://host or http://localhost[:port], with no user, path, query or fragment", s)
+	if err != nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || strings.ContainsAny(s, "?#") {
+		return bad
+	}
+	if u.Scheme == "https" || u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
+		return nil
+	}
+	return bad
+}
+
+// findRec returns the recommendation for ns, workload and container in a fresh report.
+func findRec(build func() (export, error), ns, workload, container string) (report.Rec, error) {
+	e, err := build()
+	if err != nil {
+		return report.Rec{}, err
+	}
+	for _, r := range e.Recs {
+		if r.Namespace == ns && r.Workload == workload && r.Container == container {
+			return r, nil
+		}
+	}
+	return report.Rec{}, fmt.Errorf("No recommendation for %s/%s/%s", ns, workload, container)
+}
+
+var recSchema = func(extra map[string]any) map[string]any {
+	props := map[string]any{
+		"namespace": map[string]any{"type": "string", "description": "Namespace of the recommendation"},
+		"workload":  map[string]any{"type": "string", "description": "Kind/name, for example Deployment/api"},
+		"container": map[string]any{"type": "string", "description": "Container name"},
+	}
+	for k, v := range extra {
+		props[k] = v
+	}
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"namespace", "workload", "container"}, "properties": props}
+}
+
+// mcpServer exposes the report built by build as seven read-only tools. cluster and appURL (already checked) only shape open_pr_link.
+func mcpServer(build func() (export, error), cluster, appURL string) *mcp.Server {
 	none := map[string]any{"type": "object", "additionalProperties": false}
 	return &mcp.Server{
 		Name: "phrontis", Version: "0.1.0",
@@ -106,6 +156,60 @@ func mcpServer(build func() (export, error)) *mcp.Server {
 						return nodeSavings{Current: e.Monthly, Note: "no node simulation: it needs cloud prices for nodes in exactly one AWS region and at least one pod that fits a pool (see cost_summary Warnings)"}, nil
 					}
 					return nodeSavings{true, "", p.Current, p.Monthly, p.Current - p.Monthly, p.Type, p.Nodes, p.Families, p.SpotShare, p.Unplaced}, nil
+				}},
+			{Name: "patch", Description: "The YAML patch that sets the recommended requests on one container, and its file name (the same as Download in the dashboard). Read-only: nothing is applied. A person opens the PR from the link.",
+				InputSchema: recSchema(nil), Call: func(raw json.RawMessage) (any, error) {
+					var a struct{ Namespace, Workload, Container string }
+					if err := json.Unmarshal(raw, &a); err != nil {
+						return nil, fmt.Errorf("invalid arguments: %w", err)
+					}
+					x, err := findRec(build, a.Namespace, a.Workload, a.Container)
+					if err != nil {
+						return nil, err
+					}
+					y, ok := manifest.Patch(x)
+					if !ok {
+						return nil, fmt.Errorf("%s: no patch for this kind, so set the requests in its manifest.", x.Workload)
+					}
+					return map[string]string{"File": manifest.PatchFile(x), "Patch": y}, nil
+				}},
+			{Name: "open_pr_link", Description: "A link to the Phrontis dashboard that opens the Patch of one recommendation with the Open PR form filled in (optional repo as owner/name and path to the manifest in it). Read-only: nothing is applied. A person opens the PR from the link. The --cluster id is not checked against the kubeconfig: a wrong id links to another cluster's recommendation.",
+				InputSchema: recSchema(map[string]any{
+					"repo": map[string]any{"type": "string", "description": "GitHub repo as owner/name, for example acme/infra"},
+					"path": map[string]any{"type": "string", "description": "Manifest path in the repo, for example k8s/api.yaml"}}),
+				Call: func(raw json.RawMessage) (any, error) {
+					var a struct{ Namespace, Workload, Container, Repo, Path string }
+					if err := json.Unmarshal(raw, &a); err != nil {
+						return nil, fmt.Errorf("invalid arguments: %w", err)
+					}
+					if cluster == "" {
+						return nil, errors.New("Set --cluster to the Phrontis cluster id (Clusters page)")
+					}
+					repo, path := a.Repo, a.Path
+					if repo == "" {
+						repo = "a/b"
+					}
+					if path == "" {
+						path = "a.yaml"
+					}
+					if f, msg := manifest.CheckPRInput(repo, path); (f == "repo" && a.Repo != "") || (f == "path" && a.Path != "") {
+						return nil, fmt.Errorf("%s: %s", f, msg)
+					}
+					x, err := findRec(build, a.Namespace, a.Workload, a.Container)
+					if err != nil {
+						return nil, err
+					}
+					if _, ok := manifest.Patch(x); !ok {
+						return nil, fmt.Errorf("%s: no patch for this kind, so set the requests in its manifest.", x.Workload)
+					}
+					q := url.Values{"cluster": {cluster}, "pr": {strings.Join([]string{x.Namespace, x.Workload, x.Container}, "/")}}
+					if a.Repo != "" {
+						q.Set("repo", a.Repo)
+					}
+					if a.Path != "" {
+						q.Set("path", a.Path)
+					}
+					return map[string]string{"Link": appURL + "/?" + q.Encode()}, nil
 				}},
 		},
 	}

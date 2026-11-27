@@ -1,0 +1,217 @@
+[
+  {
+    "name": "deployment",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5
+    },
+    "patch": "# kubectl -n shop patch deployment api --patch-file api.patch.yaml\n# Sets requests only; limits stay as they are. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n",
+    "file": "api.patch.yaml"
+  },
+  {
+    "name": "statefulset rounds memory up to Mi",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "StatefulSet/db",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 250,
+        "MemBytes": 314572801
+      },
+      "MonthlySaving": 5
+    },
+    "patch": "# kubectl -n shop patch statefulset db --patch-file db.patch.yaml\n# Sets requests only; limits stay as they are. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 250m\n            memory: 301Mi\n",
+    "file": "db.patch.yaml"
+  },
+  {
+    "name": "daemonset",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "DaemonSet/agent",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5
+    },
+    "patch": "# kubectl -n shop patch daemonset agent --patch-file agent.patch.yaml\n# Sets requests only; limits stay as they are. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n",
+    "file": "agent.patch.yaml"
+  },
+  {
+    "name": "cronjob",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "CronJob/nightly",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5
+    },
+    "patch": "# kubectl -n shop patch cronjob nightly --patch-file nightly.patch.yaml\n# Sets requests only; limits stay as they are. Takes effect from the next run.\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n          - name: api\n            resources:\n              requests:\n                cpu: 120m\n                memory: 1536Mi\n",
+    "file": "nightly.patch.yaml"
+  },
+  {
+    "name": "raised cpu limit",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5,
+      "Limit": {
+        "MilliCPU": 100,
+        "MemBytes": 0
+      }
+    },
+    "patch": "# kubectl -n shop patch deployment api --patch-file api.patch.yaml\n# Sets requests, and raises a limit to its new request where it would be exceeded. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n          limits:\n            cpu: 120m\n",
+    "file": "api.patch.yaml"
+  },
+  {
+    "name": "raised both limits",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5,
+      "Limit": {
+        "MilliCPU": 100,
+        "MemBytes": 1073741824
+      }
+    },
+    "patch": "# kubectl -n shop patch deployment api --patch-file api.patch.yaml\n# Sets requests, and raises a limit to its new request where it would be exceeded. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n          limits:\n            cpu: 120m\n            memory: 1536Mi\n",
+    "file": "api.patch.yaml"
+  },
+  {
+    "name": "limit not exceeded",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5,
+      "Limit": {
+        "MilliCPU": 1000,
+        "MemBytes": 4294967296
+      }
+    },
+    "patch": "# kubectl -n shop patch deployment api --patch-file api.patch.yaml\n# Sets requests only; limits stay as they are. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n",
+    "file": "api.patch.yaml"
+  },
+  {
+    "name": "job gets no patch",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Job/migrate",
+      "Container": "api",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5
+    },
+    "patch": null,
+    "file": "migrate.patch.yaml"
+  },
+  {
+    "name": "sidecar is an init container",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "mesh",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5,
+      "Sidecar": true
+    },
+    "patch": "# kubectl -n shop patch deployment api --patch-file api.patch.yaml\n# Sets requests only; limits stay as they are. Applying it restarts the pods.\nspec:\n  template:\n    spec:\n      initContainers:\n      - name: mesh\n        resources:\n          requests:\n            cpu: 120m\n            memory: 1536Mi\n",
+    "file": "api.patch.yaml"
+  },
+  {
+    "name": "injected sidecar gets no patch",
+    "rec": {
+      "Namespace": "shop",
+      "Workload": "Deployment/api",
+      "Container": "mesh",
+      "Pods": 2,
+      "Request": {
+        "MilliCPU": 500,
+        "MemBytes": 2147483648
+      },
+      "Recommended": {
+        "MilliCPU": 120,
+        "MemBytes": 1610612736
+      },
+      "MonthlySaving": 5,
+      "Sidecar": true,
+      "Injected": true
+    },
+    "patch": null,
+    "file": "api.patch.yaml"
+  }
+]

@@ -1,0 +1,67 @@
+[
+  {
+    "group": "",
+    "resources": [
+      "nodes",
+      "pods",
+      "persistentvolumes",
+      "services",
+      "limitranges"
+    ],
+    "reason": "Node size and price, what each pod requests, volumes and load balancers, and the defaults a namespace sets."
+  },
+  {
+    "group": "",
+    "resources": [
+      "namespaces"
+    ],
+    "names": [
+      "kube-system"
+    ],
+    "reason": "Only kube-system. Its UID names the cluster, so the API key can be checked against it."
+  },
+  {
+    "group": "apps",
+    "resources": [
+      "replicasets",
+      "statefulsets",
+      "daemonsets"
+    ],
+    "reason": "Find the workload that owns each pod, so cost is shown per workload."
+  },
+  {
+    "group": "policy",
+    "resources": [
+      "poddisruptionbudgets"
+    ],
+    "reason": "Flag pods that cannot be evicted safely."
+  },
+  {
+    "group": "autoscaling",
+    "resources": [
+      "horizontalpodautoscalers"
+    ],
+    "reason": "Mark recommendations for workloads that an autoscaler already scales."
+  },
+  {
+    "group": "batch",
+    "resources": [
+      "jobs"
+    ],
+    "reason": "Find the workload that owns each job pod."
+  },
+  {
+    "group": "storage.k8s.io",
+    "resources": [
+      "storageclasses"
+    ],
+    "reason": "Price volumes by storage class."
+  },
+  {
+    "group": "metrics.k8s.io",
+    "resources": [
+      "pods"
+    ],
+    "reason": "Measured CPU and memory use, the basis of every recommendation."
+  }
+]

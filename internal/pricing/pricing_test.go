@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -332,5 +333,57 @@ func TestAWSClientConcurrent(t *testing.T) {
 	}
 	if es, _ := os.ReadDir(dir); len(es) != 1 || es[0].Name() != "aws-ec2-eu-central-1.json" {
 		t.Errorf("cache dir has leftovers: %v", es)
+	}
+}
+
+func TestDataTransferOut(t *testing.T) {
+	csv := fixture(t, "aws-datatransfer-eu-central-1.csv")
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/offers/v1.0/aws/AWSDataTransfer/current/eu-central-1/index.csv" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(csv)
+	}))
+	defer srv.Close()
+	c := &Client{AWSBase: srv.URL}
+	for i := 0; i < 2; i++ {
+		if p, err := c.DataTransferOut(context.Background(), "eu-central-1"); err != nil || p != 0.09 {
+			t.Fatalf("got %v %v", p, err)
+		}
+	}
+	if hits.Load() != 1 {
+		t.Errorf("a region downloads once per run, got %d", hits.Load())
+	}
+	if _, err := c.DataTransferOut(context.Background(), "xx-nowhere-1"); err == nil {
+		t.Error("a region with no price file must be an error")
+	}
+	if _, err := c.DataTransferOut(context.Background(), "eu/../x"); err == nil {
+		t.Error("odd region must be rejected")
+	}
+}
+
+func TestParseDataTransferOut(t *testing.T) {
+	const hdr = "\"SKU\",\"TermType\",\"StartingRange\",\"Unit\",\"PricePerUnit\",\"Currency\",\"Transfer Type\",\"To Location\",\"usageType\"\n"
+	row := func(start, price, usage string) string {
+		return fmt.Sprintf("\"a\",\"OnDemand\",%q,\"GB\",%q,\"USD\",\"AWS Outbound\",\"External\",%q\n", start, price, usage)
+	}
+	ok := hdr + row("0", "0.0", "Global-DataTransfer-Out-Bytes") + row("10240", "0.085", "EUC1-DataTransfer-Out-Bytes") + row("0", "0.09", "EUC1-DataTransfer-Out-Bytes")
+	if p, err := parseDataTransferOut(strings.NewReader(ok)); err != nil || p != 0.09 {
+		t.Errorf("got %v %v", p, err)
+	}
+	for name, in := range map[string]string{
+		"no row":       hdr + row("10240", "0.085", "EUC1-DataTransfer-Out-Bytes"),
+		"free only":    hdr + row("0", "0.0", "Global-DataTransfer-Out-Bytes"),
+		"conflict":     hdr + row("0", "0.09", "EUC1-DataTransfer-Out-Bytes") + row("0", "0.08", "EUC1-DataTransfer-Out-Bytes"),
+		"not a number": hdr + row("0", "Inf", "EUC1-DataTransfer-Out-Bytes"),
+		"no header":    "\"x\"\n",
+		"lacks column": "\"SKU\"\n",
+	} {
+		if p, err := parseDataTransferOut(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: accepted %v", name, p)
+		}
 	}
 }

@@ -22,11 +22,19 @@ phrontis --help                        # all flags
 
 The CLI reads the cluster through your kubeconfig. Node prices come from public AWS and Azure list prices; switch that off with `--cloud-prices=false` to use flat `--cpu-hour` and `--gib-hour` prices.
 
-`phrontis mcp` starts a read-only MCP server, so an AI assistant can ask for the same report.
+Without metrics-server history, point it at Prometheus (or Thanos, VictoriaMetrics, Mimir) for p95 CPU and peak memory over a longer span:
+
+```bash
+phrontis --context my-cluster --prometheus http://prometheus:9090 --history 14d
+```
+
+`phrontis predict -f app.yaml` prints what the workloads in a manifest would cost each month. It needs no cluster and sends nothing.
+
+`phrontis mcp` starts a read-only MCP server, so an AI assistant can ask for the same report. It changes nothing in the cluster.
 
 ## Agent (Helm)
 
-The agent runs in your cluster and sends a sample every `every` (default 60s) to the Phrontis API URL you give it.
+The agent runs in your cluster and sends a sample every `every` (default 60s) to the Phrontis API URL you give it. The API is the hosted Phrontis service; the CLI report above works without it.
 
 ```bash
 helm install phrontis-agent deploy/helm/phrontis-agent \

@@ -22,6 +22,7 @@ func (f spotFake) SpotHourly(context.Context, pricing.Key) pricing.SpotPrice { r
 func (spotFake) EBSMonthly(context.Context, string, string) (float64, error) {
 	return 0, errors.New("unused")
 }
+func (spotFake) DataTransferOut(context.Context, string) (float64, error)      { return 0, nil }
 func (spotFake) ELBHourly(context.Context, string) (map[string]float64, error) { return nil, nil }
 func (spotFake) EC2Types(context.Context, string) (map[string]pricing.Type, error) {
 	return nil, nil

@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
+
+// PendingPod is a pod waiting for a node (S87). It only feeds the pending-pod alert: it is never costed or rightsized.
+type PendingPod struct {
+	Namespace, Name, Workload string
+	Since                     time.Time // the PodScheduled=False time, else the creation time
+}
 
 // PDB is a PodDisruptionBudget, already resolved by the agent to the workloads whose pods its selector matches.
 type PDB struct {
 	Namespace, Name string
 	Workloads       []string // "Kind/name", as in Pod.Workload
+	Strict          bool     `json:",omitempty"` // status.disruptionsAllowed is 0: it blocks a drain (S26)
 }
 
 // SpotVerdict says whether a workload may run on spot nodes, and why (Reason is for the report, in plain words).
